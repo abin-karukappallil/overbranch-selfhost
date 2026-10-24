@@ -30,7 +30,7 @@
 
 ---
 
-## 🚀 1-Line Quick Installation (Pterodactyl-Style)
+## 🚀 1-Line Quick Installation (Lightning Install)
 
 Install and setup OverBranch Self-Host completely with a single command from anywhere:
 
