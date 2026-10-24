@@ -136,17 +136,19 @@ def upsert_latex_document(supabase: Any, project_id: str, file_path: str, raw_co
     """Safely updates or inserts a latex_documents record in SQLite."""
     try:
         import sqlite3
+        import time
         from database import get_sqlite_path
         db_path = get_sqlite_path()
         conn = sqlite3.connect(str(db_path))
+        now_ts = int(time.time())
         try:
             conn.execute(
                 """
                 INSERT INTO latex_documents (id, project_id, file_path, raw_code, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(id) DO UPDATE SET raw_code = excluded.raw_code, updated_at = CURRENT_TIMESTAMP
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET raw_code = excluded.raw_code, updated_at = excluded.updated_at
                 """,
-                (f"{project_id}_{file_path}", project_id, file_path, raw_code)
+                (f"{project_id}_{file_path}", project_id, file_path, raw_code, now_ts)
             )
             conn.commit()
         finally:

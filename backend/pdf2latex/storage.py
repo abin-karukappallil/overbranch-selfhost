@@ -115,6 +115,7 @@ def create_project_for_conversion(owner_id: str, name: Optional[str], filename: 
     if sb is None:
         return {"project_id": project_id, "name": clean_name}
 
+    now_ts = int(datetime.now(timezone.utc).timestamp())
     try:
         sb.table("projects").insert({
             "id": project_id,
@@ -125,13 +126,20 @@ def create_project_for_conversion(owner_id: str, name: Optional[str], filename: 
             "default_branch": "main.tex",
             "language": "latex",
             "status": "active",
-            "is_public": False,
-            "is_favorite": False,
+            "is_public": 0,
+            "is_favorite": 0,
             "template": "PDF Import",
             "stars_count": 0,
+            "created_at": now_ts,
+            "updated_at": now_ts,
+            "last_active_at": now_ts,
         }).execute()
         sb.table("project_members").insert({
-            "id": str(uuid.uuid4()), "project_id": project_id, "user_id": owner_id, "role": "Owner",
+            "id": str(uuid.uuid4()),
+            "project_id": project_id,
+            "user_id": owner_id,
+            "role": "Owner",
+            "joined_at": now_ts,
         }).execute()
     except Exception as e:
         logger.warning(f"Project row creation failed: {e}")

@@ -63,9 +63,9 @@ def init_sqlite_schema():
         is_favorite INTEGER NOT NULL DEFAULT 0,
         template TEXT NOT NULL DEFAULT 'IEEEtran',
         stars_count INTEGER NOT NULL DEFAULT 0,
-        last_active_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        last_active_at INTEGER DEFAULT (strftime('%s', 'now')),
+        created_at INTEGER DEFAULT (strftime('%s', 'now')),
+        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
 
     CREATE TABLE IF NOT EXISTS project_members (
@@ -73,7 +73,7 @@ def init_sqlite_schema():
         project_id TEXT NOT NULL,
         user_id TEXT NOT NULL DEFAULT 'selfhost-user',
         role TEXT NOT NULL DEFAULT 'Owner',
-        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        joined_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
 
     CREATE TABLE IF NOT EXISTS latex_documents (
@@ -81,7 +81,7 @@ def init_sqlite_schema():
         project_id TEXT NOT NULL,
         file_path TEXT NOT NULL,
         raw_code TEXT NOT NULL,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
 
     CREATE TABLE IF NOT EXISTS templates (
@@ -101,7 +101,7 @@ def init_sqlite_schema():
         theme TEXT NOT NULL DEFAULT 'dark',
         email_notifications INTEGER NOT NULL DEFAULT 0,
         security_alerts INTEGER NOT NULL DEFAULT 0,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
 
     CREATE TABLE IF NOT EXISTS editor_preferences (
@@ -123,7 +123,7 @@ def init_sqlite_schema():
         title TEXT,
         content TEXT NOT NULL,
         embedding TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
 
     CREATE TABLE IF NOT EXISTS comments (
@@ -132,8 +132,8 @@ def init_sqlite_schema():
         author_id TEXT NOT NULL DEFAULT 'selfhost-user',
         content TEXT NOT NULL,
         resolved INTEGER NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at INTEGER DEFAULT (strftime('%s', 'now')),
+        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
 
     -- Ensure default user and preferences exist
@@ -143,6 +143,23 @@ def init_sqlite_schema():
     INSERT OR IGNORE INTO editor_preferences (id, user_id, font_size, tab_size, word_wrap, auto_compile, engine, line_numbers)
     VALUES ('ed-pref-default', 'selfhost-user', 14, 2, 1, 1, 'pdfLaTeX', 1);
     """)
+
+    # Ensure any legacy text timestamps are converted to integer epoch seconds
+    timestamp_cols = {
+        'projects': ['created_at', 'updated_at', 'last_active_at'],
+        'project_members': ['joined_at'],
+        'latex_documents': ['updated_at'],
+        'user_preferences': ['updated_at'],
+        'document_vectors': ['created_at'],
+        'comments': ['created_at', 'updated_at'],
+    }
+    for t, cols in timestamp_cols.items():
+        for col in cols:
+            try:
+                conn.execute(f"UPDATE {t} SET {col} = CAST(strftime('%s', {col}) AS INTEGER) WHERE typeof({col}) = 'text'")
+            except Exception:
+                pass
+    conn.commit()
     conn.commit()
     conn.close()
     logger.info("SQLite schema initialization complete.")

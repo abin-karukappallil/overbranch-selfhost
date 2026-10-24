@@ -7,6 +7,43 @@ import { TRPCError } from '@trpc/server';
 import fs from 'fs';
 import path from 'path';
 
+function safeIsoDate(val: any): string {
+  if (!val) return new Date().toISOString();
+  try {
+    if (val instanceof Date) {
+      return isNaN(val.getTime()) ? new Date().toISOString() : val.toISOString();
+    }
+    const d = new Date(typeof val === 'number' && val < 1e11 ? val * 1000 : val);
+    if (!isNaN(d.getTime())) {
+      return d.toISOString();
+    }
+  } catch {}
+  return new Date().toISOString();
+}
+
+function safeLocalDate(val: any): string {
+  if (!val) return "Recently";
+  try {
+    if (val instanceof Date) {
+      return isNaN(val.getTime()) ? "Recently" : val.toLocaleDateString();
+    }
+    const d = new Date(typeof val === 'number' && val < 1e11 ? val * 1000 : val);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString();
+    }
+  } catch {}
+  return "Recently";
+}
+
+function safeDateObj(val: any): Date {
+  if (!val) return new Date();
+  if (val instanceof Date) {
+    return isNaN(val.getTime()) ? new Date() : val;
+  }
+  const d = new Date(typeof val === 'number' && val < 1e11 ? val * 1000 : val);
+  return isNaN(d.getTime()) ? new Date() : d;
+}
+
 export const projectsRouter = router({
   listProjects: protectedProcedure
     .input(z.object({
@@ -45,8 +82,8 @@ export const projectsRouter = router({
         role: "Owner" as "Owner" | "Editor" | "Viewer",
         collaboratorsCount: 1,
         stars: p.starsCount || 0,
-        createdAt: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
-        updatedAt: p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : "Recently",
+        createdAt: safeIsoDate(p.createdAt),
+        updatedAt: safeLocalDate(p.updatedAt),
         color: "from-indigo-500/20 to-purple-500/20",
         badgeVariant: "glow" as const,
         isOwner: true,
@@ -64,8 +101,8 @@ export const projectsRouter = router({
         role: role as "Owner" | "Editor" | "Viewer",
         collaboratorsCount: 2,
         stars: p.starsCount || 0,
-        createdAt: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
-        updatedAt: p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : "Recently",
+        createdAt: safeIsoDate(p.createdAt),
+        updatedAt: safeLocalDate(p.updatedAt),
         color: "from-purple-500/20 to-cyan-500/20",
         badgeVariant: "glow" as const,
         isOwner: false,
@@ -83,8 +120,8 @@ export const projectsRouter = router({
 
       // Sort all projects by recently created first (newest createdAt in first place)
       allProjects.sort((a, b) => {
-        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        const timeA = new Date(safeIsoDate(a.createdAt)).getTime();
+        const timeB = new Date(safeIsoDate(b.createdAt)).getTime();
         return timeB - timeA;
       });
 
@@ -115,59 +152,17 @@ export const projectsRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Project not found' });
       }
 
-      // 1. Authenticated user check
-      if (ctx.session?.user) {
-        const userId = ctx.session.user.id;
-        if (project.ownerId === userId) {
-          return {
-            ...project,
-            role: "Owner" as const,
-            isOwner: true,
-            isGuest: false,
-            expiresAt: null,
-          };
-        }
-
-        const [member] = await db.select().from(projectMembers).where(
-          and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId))
-        );
-
-        if (member) {
-          return {
-            ...project,
-            role: member.role as "Owner" | "Editor" | "Viewer",
-            isOwner: member.role === "Owner",
-            isGuest: false,
-            expiresAt: null,
-          };
-        }
-      }
-
-      // 3. Fallback: If project was created under "default-user" or guest prefix and user is logged in
-      if (ctx.session?.user && (project.ownerId === "default-user" || project.ownerId.startsWith("guest-"))) {
-        const userId = ctx.session.user.id;
-        try {
-          await db.update(projects).set({ ownerId: userId }).where(eq(projects.id, projectId));
-          await db.insert(projectMembers).values({
-            id: crypto.randomUUID(),
-            projectId: projectId,
-            userId: userId,
-            role: "Owner",
-          }).onConflictDoNothing();
-          return {
-            ...project,
-            ownerId: userId,
-            role: "Owner" as const,
-            isOwner: true,
-            isGuest: false,
-            expiresAt: null,
-          };
-        } catch (claimErr) {
-          console.warn("[getById] Claim error:", claimErr);
-        }
-      }
-
-      throw new TRPCError({ code: 'FORBIDDEN', message: 'You do not have access to this project' });
+      // In single-user self-host mode, access is always granted to the local author
+      return {
+        ...project,
+        createdAt: safeDateObj(project.createdAt),
+        updatedAt: safeDateObj(project.updatedAt),
+        lastActiveAt: safeDateObj(project.lastActiveAt),
+        role: "Owner" as "Owner" | "Editor" | "Viewer",
+        isOwner: true,
+        isGuest: false,
+        expiresAt: null,
+      };
     }),
 
   createProject: protectedProcedure

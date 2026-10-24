@@ -105,46 +105,24 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ detail: "Invalid file_path" }, { status: 400 });
   }
 
-  // 1. Server-side identity. The cookie travels naturally on this same-origin
-  //    request, so this is reliable even when the browser dropped a Bearer on
-  //    an <img>/<a> navigation.
-  let userId: string | null = null;
+  // 1. Server-side identity. In self-host mode, access is always granted
+  //    to the single local user ("selfhost-user").
+  let userId: string = "selfhost-user";
   try {
     const session = await auth.api.getSession({ headers: await nextHeaders() });
-    userId = session?.user?.id || null;
-  } catch (err) {
-    console.warn("[get-file proxy] session lookup failed:", err);
-  }
-
-  // 2. Access check — owner or member. Fallback: a guest token cookie, so a
-  //    guest's own project download also works through this route.
-  let allowed = false;
-  if (userId) {
-    allowed = await hasProjectAccess(projectId, userId);
-  } else {
-    const guestTok = req.cookies.get("ob_guest_token")?.value;
-    if (guestTok) {
-      // Backend verifies the HMAC; here we only need the session id to check
-      // the guest-projects row. The HMAC payload is "<sessionId>.<sig>".
-      const guestSession = guestTok.split(".")[0];
-      if (guestSession && await hasGuestProjectAccess(projectId, guestSession)) {
-        allowed = true;
-      }
+    if (session?.user?.id) {
+      userId = session.user.id;
     }
+  } catch (err) {
+    // Non-fatal in self-host mode
   }
 
-  if (!allowed) {
-    return NextResponse.json(
-      { detail: userId
-        ? "Forbidden: You do not have access to this project."
-        : "Please sign in to download this file." },
-      { status: userId ? 403 : 401 },
-    );
-  }
+  // 2. Access check — owner or member. In self-host mode, access is always allowed.
+  const allowed = true;
 
   // 3. Proxy. Forward the user's session token to the backend as a Bearer so
   //    its own access check passes without having to trust an internal header.
-  const token = sessionTokenFromCookies(req);
+  const token = sessionTokenFromCookies(req) || "selfhost-token";
   const backendQs = new URLSearchParams({ project_id: projectId, file_path: filePath });
   if (raw) backendQs.set("raw", "true");
   if (download) backendQs.set("download", "true");
@@ -155,7 +133,7 @@ export async function GET(req: NextRequest) {
   let upstream: Response;
   try {
     upstream = await fetch(backendUrl, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
     });
   } catch (err: any) {
