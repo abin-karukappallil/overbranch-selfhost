@@ -1,0 +1,207 @@
+"""
+models.py — Data structures shared by extraction, generation, verification and reporting.
+
+All coordinates are PDF points (1/72 in) in the PyMuPDF convention: origin at the
+top-left of the page, y growing downwards.
+"""
+
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+
+BBox = Tuple[float, float, float, float]
+RGB = Tuple[int, int, int]
+
+# PyMuPDF span flag bits
+FLAG_SUPERSCRIPT = 1
+FLAG_ITALIC = 2
+FLAG_SERIF = 4
+FLAG_MONO = 8
+FLAG_BOLD = 16
+
+
+@dataclass
+class Span:
+    text: str
+    font: str  # raw PDF font name (may carry a subset prefix like ABCDEF+)
+    size: float
+    color: RGB
+    flags: int
+    bbox: BBox
+    origin: Tuple[float, float]  # baseline start
+    # Bold established from the FontDescriptor (/FontWeight, ForceBold) or from
+    # synthetic bold (fill+stroke rendering) — signals the font name and flags miss.
+    force_bold: bool = False
+
+    @property
+    def bold(self) -> bool:
+        from .fontmap import name_is_bold
+        return self.force_bold or bool(self.flags & FLAG_BOLD) or name_is_bold(self.font)
+
+    @property
+    def italic(self) -> bool:
+        from .fontmap import name_is_italic
+        return bool(self.flags & FLAG_ITALIC) or name_is_italic(self.font)
+
+    @property
+    def superscript(self) -> bool:
+        return bool(self.flags & FLAG_SUPERSCRIPT)
+
+
+@dataclass
+class Line:
+    spans: List[Span]
+    bbox: BBox
+    block: int = 0
+    invisible: bool = False  # OCR text layered invisibly over a scanned image
+    column: int = 0  # reading-order region (see extract.order_lines); a change starts a new flow
+
+    @property
+    def text(self) -> str:
+        return "".join(s.text for s in self.spans)
+
+    @property
+    def baseline(self) -> float:
+        return max(s.origin[1] for s in self.spans)
+
+
+@dataclass
+class Drawing:
+    rect: BBox
+    kind: str  # "hrule" | "vrule" | "rect" | "path"
+    stroke: Optional[RGB] = None
+    fill: Optional[RGB] = None
+    width: float = 0.0
+    n_items: int = 1
+    complex: bool = False  # curves, diagonals or polylines that LaTeX rules cannot express
+
+
+@dataclass
+class ImageRef:
+    file: str  # project-relative path, e.g. assets/pdf_ab12cd34/page1_img1.png
+    bbox: BBox
+    width_px: int = 0
+    height_px: int = 0
+    kind: str = "image"  # "image" | "figure" (rasterized vector region) | "scan"
+
+
+@dataclass
+class PageExtract:
+    number: int  # 1-based
+    width: float
+    height: float
+    margins: BBox  # left, top, right, bottom (content extents)
+    lines: List[Line] = field(default_factory=list)
+    drawings: List[Drawing] = field(default_factory=list)
+    images: List[ImageRef] = field(default_factory=list)
+    background: Optional[str] = None  # full-page raster of vector art (no text), placed behind the text
+    is_scanned: bool = False
+    ocr_text: bool = False  # lines come from an invisible OCR layer
+    warnings: List[str] = field(default_factory=list)
+
+    @property
+    def text(self) -> str:
+        return "\n".join(l.text for l in self.lines)
+
+    @property
+    def has_content(self) -> bool:
+        return bool(self.lines or self.images or self.drawings or self.background)
+
+
+@dataclass
+class DocExtract:
+    pages: List[PageExtract]
+    asset_prefix: str  # e.g. assets/pdf_ab12cd34
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class HeadingStyle:
+    """One heading level of a document's style (template mode, M13)."""
+    name: str               # "H1" | "H2" | "H3"
+    font: str               # PDF font name (subset prefix removed) or a stated font name
+    size_pt: float
+    bold: bool
+    italic: bool
+    color: str              # "#rrggbb"
+    spacing_before_pt: float
+
+
+@dataclass
+class StyleProfile:
+    """
+    The document's typographic rules (template mode, M13): what a student edits to
+    restyle the whole document. Measured from the extracted spans, then optionally
+    overridden by rules the document states about itself (M14).
+    """
+    body_font: str
+    body_size_pt: float
+    line_spacing: float     # baseline-to-baseline distance / body size
+    margins_mm: Dict[str, float]  # {"top","bottom","left","right"}
+    colors: List[str]       # ["#rrggbb", ...], most used first
+    heading_levels: List[HeadingStyle]
+    source: str = "measured"  # "measured" | "stated" | "merged"
+    # Which values came from rules the document states (M14), e.g. "body_size_pt",
+    # "margins_mm.top", "H1": the preamble comments say "stated" for these.
+    stated_fields: List[str] = field(default_factory=list)
+
+
+@dataclass
+class PageReport:
+    number: int
+    status: str = "pending"  # pending | generating | compiling | repairing | verifying | rerunning | done | below_threshold | failed
+    similarity: Optional[float] = None
+    ssim: Optional[float] = None
+    pixel_diff: Optional[float] = None
+    text_coverage: Optional[float] = None
+    extra_ratio: Optional[float] = None  # words in the output that are not in the PDF
+    shift_pt: Optional[float] = None     # vertical offset of the render against the original
+    displacement: Optional[float] = None  # median pt a word moved from its place in the PDF
+    attempts: int = 0  # LLM generation calls for this page
+    compile_repairs: int = 0
+    fallback: Optional[str] = None  # None | "layout" (deterministic positioned text) | "image"
+    overflow: bool = False
+    warnings: List[str] = field(default_factory=list)
+    style_mismatches: Optional[int] = None   # runs whose weight/slant/size differ from the PDF (after repair)
+    overflow_lines: Optional[int] = None     # lines still running past their right edge (after repair)
+    geometry_repairs: List[str] = field(default_factory=list)  # deterministic fixes applied
+
+
+@dataclass
+class ConversionReport:
+    page_count: int
+    pages: List[PageReport] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    threshold: float = 0.0          # reported visual-similarity target (a diagnostic)
+    coverage_target: float = 0.0    # the gate: share of the PDF's words the output must carry
+    max_displacement: float = 0.0   # the gate: median pt a word may move from its place in the PDF
+    compiled: bool = False
+    compiled_page_count: Optional[int] = None
+    model: str = ""
+    llm_used: bool = True
+    # Template mode only (M13/M14); dropped from to_dict() when unset so exact mode is unchanged.
+    template_rules: Optional[Dict[str, Any]] = None
+    style_profile: Optional[Dict[str, Any]] = None
+    # Editable mode only; dropped from to_dict() when unset so exact mode's report dict is unchanged.
+    # `mode` is "editable"; `editable` carries the gate results, per-attribute style scores, lint
+    # counts, structure counts, polish stats and the asset list.
+    mode: Optional[str] = None
+    editable: Optional[Dict[str, Any]] = None
+    disclaimer: str = (
+        "Best-effort conversion. A page is accepted when it compiles to a single page carrying "
+        "every word of the source; the similarity figure is a visual comparison (SSIM + pixel "
+        "difference) reported alongside it, and a faithful page that re-sets the type differently "
+        "scores well below 100%. The output is not guaranteed to be identical to the PDF."
+    )
+
+    @property
+    def mean_similarity(self) -> Optional[float]:
+        vals = [p.similarity for p in self.pages if p.similarity is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        for key in ("template_rules", "style_profile", "mode", "editable"):
+            if d.get(key) is None:
+                d.pop(key, None)
+        d["mean_similarity"] = self.mean_similarity
+        return d

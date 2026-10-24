@@ -1,0 +1,501 @@
+import { router, publicProcedure, protectedProcedure, projectProcedure, ownerProcedure } from '../init';
+import { z } from 'zod';
+import { db } from '@/db';
+import { projects, projectMembers, user, notifications, guestProjects, projectInvitations, latexDocuments } from '@/db/schema';
+import { eq, and, or, like, desc, sql } from 'drizzle-orm';
+import { TRPCError } from '@trpc/server';
+import fs from 'fs';
+import path from 'path';
+
+export const projectsRouter = router({
+  listProjects: protectedProcedure
+    .input(z.object({
+      search: z.string().optional(),
+      template: z.string().optional(),
+      favoritesOnly: z.boolean().optional(),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const userId = ctx.user.id;
+
+      const owned = await db
+        .select()
+        .from(projects)
+        .where(eq(projects.ownerId, userId))
+        .orderBy(desc(projects.createdAt));
+
+      const sharedRecords = await db
+        .select({
+          project: projects,
+          role: projectMembers.role,
+        })
+        .from(projectMembers)
+        .innerJoin(projects, eq(projectMembers.projectId, projects.id))
+        .where(eq(projectMembers.userId, userId))
+        .orderBy(desc(projects.createdAt));
+
+      const ownedList = owned.map((p) => ({
+        id: p.id,
+        name: p.name,
+        description: p.description || "",
+        repository: p.repository || "",
+        branch: p.defaultBranch || "main.tex",
+        template: p.template || "None",
+        status: p.status || "active",
+        isFavorite: p.isFavorite || false,
+        role: "Owner" as "Owner" | "Editor" | "Viewer",
+        collaboratorsCount: 1,
+        stars: p.starsCount || 0,
+        createdAt: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
+        updatedAt: p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : "Recently",
+        color: "from-indigo-500/20 to-purple-500/20",
+        badgeVariant: "glow" as const,
+        isOwner: true,
+      }));
+
+      const sharedList = sharedRecords.map(({ project: p, role }) => ({
+        id: p.id,
+        name: p.name,
+        description: p.description || "",
+        repository: p.repository || "",
+        branch: p.defaultBranch || "main.tex",
+        template: p.template || "None",
+        status: p.status || "active",
+        isFavorite: p.isFavorite || false,
+        role: role as "Owner" | "Editor" | "Viewer",
+        collaboratorsCount: 2,
+        stars: p.starsCount || 0,
+        createdAt: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
+        updatedAt: p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : "Recently",
+        color: "from-purple-500/20 to-cyan-500/20",
+        badgeVariant: "glow" as const,
+        isOwner: false,
+      }));
+
+      const combinedMap = new Map<string, typeof ownedList[number]>();
+      ownedList.forEach((p) => combinedMap.set(p.id, p));
+      sharedList.forEach((p) => {
+        if (!combinedMap.has(p.id)) {
+          combinedMap.set(p.id, p);
+        }
+      });
+
+      let allProjects = Array.from(combinedMap.values());
+
+      // Sort all projects by recently created first (newest createdAt in first place)
+      allProjects.sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return timeB - timeA;
+      });
+
+      if (input?.search) {
+        const q = input.search.toLowerCase();
+        allProjects = allProjects.filter(
+          (p) => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q)
+        );
+      }
+
+      if (input?.template && input.template !== "all") {
+        allProjects = allProjects.filter((p) => p.template === input.template);
+      }
+
+      if (input?.favoritesOnly) {
+        allProjects = allProjects.filter((p) => p.isFavorite);
+      }
+
+      return allProjects;
+    }),
+
+  getById: publicProcedure
+    .input(z.object({ projectId: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      const projectId = input.projectId;
+      const [project] = await db.select().from(projects).where(eq(projects.id, projectId));
+      if (!project) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Project not found' });
+      }
+
+      // 1. Authenticated user check
+      if (ctx.session?.user) {
+        const userId = ctx.session.user.id;
+        if (project.ownerId === userId) {
+          return {
+            ...project,
+            role: "Owner" as const,
+            isOwner: true,
+            isGuest: false,
+            expiresAt: null,
+          };
+        }
+
+        const [member] = await db.select().from(projectMembers).where(
+          and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId))
+        );
+
+        if (member) {
+          return {
+            ...project,
+            role: member.role as "Owner" | "Editor" | "Viewer",
+            isOwner: member.role === "Owner",
+            isGuest: false,
+            expiresAt: null,
+          };
+        }
+      }
+
+      // 3. Fallback: If project was created under "default-user" or guest prefix and user is logged in
+      if (ctx.session?.user && (project.ownerId === "default-user" || project.ownerId.startsWith("guest-"))) {
+        const userId = ctx.session.user.id;
+        try {
+          await db.update(projects).set({ ownerId: userId }).where(eq(projects.id, projectId));
+          await db.insert(projectMembers).values({
+            id: crypto.randomUUID(),
+            projectId: projectId,
+            userId: userId,
+            role: "Owner",
+          }).onConflictDoNothing();
+          return {
+            ...project,
+            ownerId: userId,
+            role: "Owner" as const,
+            isOwner: true,
+            isGuest: false,
+            expiresAt: null,
+          };
+        } catch (claimErr) {
+          console.warn("[getById] Claim error:", claimErr);
+        }
+      }
+
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'You do not have access to this project' });
+    }),
+
+  createProject: protectedProcedure
+    .input(
+      z.object({
+        name: z.string().min(2),
+        template: z.string().default("None"),
+        description: z.string().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const userId = ctx.user.id;
+      const projId = crypto.randomUUID();
+      const memberId = crypto.randomUUID();
+
+      const [newP] = await db.insert(projects).values({
+        id: projId,
+        ownerId: userId,
+        name: input.name,
+        description: input.description || "Custom LaTeX Workspace",
+        template: input.template,
+        repository: `prostack/${input.name.toLowerCase().replace(/\s+/g, '-')}`,
+        defaultBranch: "main.tex",
+        status: "active",
+        isFavorite: false,
+      }).returning();
+
+      await db.insert(projectMembers).values({
+        id: memberId,
+        projectId: projId,
+        userId: userId,
+        role: "Owner",
+      });
+
+      const defaultTex = ``;
+
+      try {
+        const safeProj = projId.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const projDir = path.join(process.cwd(), 'uploads', 'projects', safeProj);
+        fs.mkdirSync(projDir, { recursive: true });
+        fs.writeFileSync(path.join(projDir, 'main.tex'), defaultTex, 'utf-8');
+      } catch (fsErr) {
+        console.warn("Could not write main.tex to local disk:", fsErr);
+      }
+
+      try {
+        await db.insert(latexDocuments).values({
+          id: `${projId}_main.tex`,
+          projectId: projId,
+          filePath: 'main.tex',
+          rawCode: defaultTex,
+          updatedAt: new Date(),
+        });
+      } catch (dbErr) {
+        console.warn("Could not insert main.tex into latex_documents:", dbErr);
+      }
+
+      return {
+        id: newP.id,
+        name: newP.name,
+        description: newP.description || "",
+        template: newP.template,
+        isFavorite: newP.isFavorite,
+        role: "Owner",
+        collaboratorsCount: 1,
+        updatedAt: "Just now",
+      };
+    }),
+
+  renameProject: ownerProcedure
+    .input(z.object({ name: z.string().min(2) }))
+    .mutation(async ({ input, ctx }) => {
+      await db.update(projects).set({ name: input.name, updatedAt: new Date() }).where(eq(projects.id, ctx.project.id));
+      return { success: true, id: ctx.project.id, name: input.name };
+    }),
+
+  toggleFavorite: projectProcedure
+    .input(z.object({ isFavorite: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      await db.update(projects).set({ isFavorite: input.isFavorite, updatedAt: new Date() }).where(eq(projects.id, ctx.project.id));
+      return { success: true, id: ctx.project.id, isFavorite: input.isFavorite };
+    }),
+
+  deleteProject: ownerProcedure
+    .mutation(async ({ ctx }) => {
+      await db.delete(projects).where(eq(projects.id, ctx.project.id));
+      return { success: true, id: ctx.project.id };
+    }),
+
+  getMembers: projectProcedure
+    .query(async ({ ctx }) => {
+      const projectId = ctx.project.id;
+
+      const [ownerUser] = await db.select().from(user).where(eq(user.id, ctx.project.ownerId));
+
+      const memberRecords = await db
+        .select({
+          memberId: projectMembers.id,
+          role: projectMembers.role,
+          joinedAt: projectMembers.joinedAt,
+          userId: user.id,
+          name: user.name,
+          email: user.email,
+          image: user.image,
+        })
+        .from(projectMembers)
+        .innerJoin(user, eq(projectMembers.userId, user.id))
+        .where(eq(projectMembers.projectId, projectId));
+
+      const list = memberRecords.map((m) => ({
+        id: m.userId,
+        name: m.name,
+        email: m.email,
+        role: m.userId === ctx.project.ownerId ? "Owner" : m.role,
+        avatar: m.image || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(m.name || 'User')}`,
+        isOwner: m.userId === ctx.project.ownerId,
+      }));
+
+      if (ownerUser && !list.some((m) => m.id === ownerUser.id)) {
+        list.unshift({
+          id: ownerUser.id,
+          name: ownerUser.name,
+          email: ownerUser.email,
+          role: "Owner",
+          avatar: ownerUser.image || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(ownerUser.name || 'Owner')}`,
+          isOwner: true,
+        });
+      }
+
+      list.sort((a, b) => (a.isOwner ? -1 : b.isOwner ? 1 : 0));
+
+      return list;
+    }),
+
+  removeMember: ownerProcedure
+    .input(z.object({ memberUserId: z.string() }))
+    .mutation(async ({ input, ctx }) => {
+      if (input.memberUserId === ctx.project.ownerId) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Project owner cannot be removed' });
+      }
+
+      await db
+        .delete(projectMembers)
+        .where(and(eq(projectMembers.projectId, ctx.project.id), eq(projectMembers.userId, input.memberUserId)));
+
+      await db.insert(notifications).values({
+        id: crypto.randomUUID(),
+        receiverId: input.memberUserId,
+        senderId: ctx.user.id,
+        projectId: ctx.project.id,
+        type: 'MemberRemoved',
+        title: 'Removed from Project',
+        message: `You were removed from ${ctx.project.name} by the owner.`,
+      });
+
+      return { success: true, removedUserId: input.memberUserId };
+    }),
+
+  leaveProject: projectProcedure
+    .input(z.object({ projectId: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      const projectId = input.projectId;
+      const userId = ctx.user.id;
+
+      // Project owner cannot leave the project without transferring ownership first
+      if (ctx.project.ownerId === userId) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Project owner cannot leave the project. Please transfer ownership first or delete the project.',
+        });
+      }
+
+      const [member] = await db
+        .select()
+        .from(projectMembers)
+        .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId)));
+
+      if (!member) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'You are not an active collaborator on this project.',
+        });
+      }
+
+      await db
+        .delete(projectMembers)
+        .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId)));
+
+      // Clean up past invitations for this user and project so re-inviting is possible in the future
+      try {
+        await db
+          .delete(projectInvitations)
+          .where(and(eq(projectInvitations.projectId, projectId), eq(projectInvitations.receiverId, userId)));
+      } catch (invErr) {
+        console.warn('[leaveProject] Invitations cleanup error:', invErr);
+      }
+
+      // Notify the project owner that the co-author has left
+      try {
+        await db.insert(notifications).values({
+          id: crypto.randomUUID(),
+          receiverId: ctx.project.ownerId,
+          senderId: userId,
+          projectId: projectId,
+          type: 'MemberLeft',
+          title: 'Co-Author Left Project',
+          message: `${ctx.user.name || ctx.user.email} has left project "${ctx.project.name}".`,
+        });
+      } catch (notifErr) {
+        console.warn('[leaveProject] Notification error:', notifErr);
+      }
+
+      return { success: true, projectId };
+    }),
+
+  transferOwnership: ownerProcedure
+    .input(
+      z.object({
+        projectId: z.string().min(1),
+        newOwnerUserId: z.string().optional(),
+        newOwnerEmail: z.string().email().optional(),
+      }).refine((data) => Boolean(data.newOwnerUserId || data.newOwnerEmail), {
+        message: 'Either newOwnerUserId or newOwnerEmail must be provided',
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const projectId = ctx.project.id;
+      const currentOwnerId = ctx.user.id;
+
+      // 1. Strict Owner Verification: only project owner can transfer
+      if (ctx.project.ownerId !== currentOwnerId) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Only the project owner can transfer ownership of this project.',
+        });
+      }
+
+      // 2. Resolve target user by ID or Email
+      let targetUser = null;
+      if (input.newOwnerUserId) {
+        const [u] = await db.select().from(user).where(eq(user.id, input.newOwnerUserId));
+        targetUser = u;
+      } else if (input.newOwnerEmail) {
+        const [u] = await db.select().from(user).where(like(user.email, input.newOwnerEmail.trim()));
+        targetUser = u;
+      }
+
+      if (!targetUser) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Target user does not exist. Please ensure they have registered an OverBranch account.',
+        });
+      }
+
+      const newOwnerId = targetUser.id;
+
+      if (currentOwnerId === newOwnerId) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'You are already the owner of this project.',
+        });
+      }
+
+      // 3. Atomically transfer ownership in transaction
+      await db.transaction(async (tx) => {
+        // A. Update projects table ownerId
+        await tx
+          .update(projects)
+          .set({ ownerId: newOwnerId, updatedAt: new Date() })
+          .where(eq(projects.id, projectId));
+
+        // B. Ensure new owner has 'Owner' role in projectMembers
+        const [existingNewOwnerMember] = await tx
+          .select()
+          .from(projectMembers)
+          .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, newOwnerId)));
+
+        if (existingNewOwnerMember) {
+          await tx
+            .update(projectMembers)
+            .set({ role: "Owner" })
+            .where(eq(projectMembers.id, existingNewOwnerMember.id));
+        } else {
+          await tx.insert(projectMembers).values({
+            id: crypto.randomUUID(),
+            projectId,
+            userId: newOwnerId,
+            role: "Owner",
+          });
+        }
+
+        // C. Former owner retains access as an 'Editor'
+        const [existingCurrentOwnerMember] = await tx
+          .select()
+          .from(projectMembers)
+          .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, currentOwnerId)));
+
+        if (existingCurrentOwnerMember) {
+          await tx
+            .update(projectMembers)
+            .set({ role: "Editor" })
+            .where(eq(projectMembers.id, existingCurrentOwnerMember.id));
+        } else {
+          await tx.insert(projectMembers).values({
+            id: crypto.randomUUID(),
+            projectId,
+            userId: currentOwnerId,
+            role: "Editor",
+          });
+        }
+
+        // D. Create notification for the new owner
+        await tx.insert(notifications).values({
+          id: crypto.randomUUID(),
+          receiverId: newOwnerId,
+          senderId: currentOwnerId,
+          projectId,
+          type: 'OwnershipTransferred',
+          title: 'Project Ownership Transferred',
+          message: `You are now the owner of project "${ctx.project.name}".`,
+        });
+      });
+
+      return {
+        success: true,
+        newOwnerUserId: newOwnerId,
+        newOwnerName: targetUser.name,
+        newOwnerEmail: targetUser.email,
+      };
+    }),
+});

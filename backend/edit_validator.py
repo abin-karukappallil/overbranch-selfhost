@@ -1,0 +1,1174 @@
+"""
+edit_validator.py — Coverage, AST Integrity & Leftover-Content Validation
+========================================================================
+Runs pre-output validation passes after the agent loop finishes:
+1. AST Coverage Check: Verifies that every content chunk (chapter, section, slide/frame)
+   was explicitly rewritten during a FULL_DOCUMENT_REWRITE session. Blocks finalization
+   if any content chunk was missed, feeding the missed IDs back to the agent loop.
+2. Leftover Content Sweep: Scans the buffer for forbidden keywords and old topic terms
+   if a topic change was requested.
+3. Structural Validation: environment nesting, math delimiters, curly braces and
+   \\left / \\right pairing.
+
+This module only *validates*. Repair lives in
+``latex_error_fixer.auto_heal_latex_code``, which closes environments positionally
+(before the enclosing \\end) rather than appending them at end-of-file.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from document_index import (
+    DocumentChunk, DocumentIndex, ExpansionUnit,
+    get_expansion_units, get_expansion_regions,
+)
+
+logger = logging.getLogger("edit_validator")
+
+
+# Environments whose body is literal text: a \begin{...}, $, { or % inside one of
+# these is content, not structure. Starred forms come first so the alternation
+# cannot match the unstarred prefix and then fail on the closing brace.
+VERBATIM_ENVS = (
+    "verbatim*", "verbatim",
+    "Verbatim*", "Verbatim",
+    "BVerbatim*", "BVerbatim",
+    "LVerbatim*", "LVerbatim",
+    "SaveVerbatim*", "SaveVerbatim",
+    "semiverbatim",
+    "alltt",
+    "lstlisting*", "lstlisting",
+    "minted*", "minted",
+    "listing*", "listing",
+    "comment",
+    "filecontents*", "filecontents",
+)
+
+# Macros whose brace-group bodies hold *template* LaTeX that must not be counted as
+# live structure: \newcommand{\openlist}{\begin{itemize}} is balanced, valid code.
+# Value = how many trailing brace groups are bodies.
+_MACRO_DEF_BODIES = {
+    "newcommand": 1,
+    "renewcommand": 1,
+    "providecommand": 1,
+    "DeclareRobustCommand": 1,
+    "newenvironment": 2,
+    "renewenvironment": 2,
+}
+
+_RE_ENV_TAG = re.compile(r"\\(begin|end)\s*\{\s*([A-Za-z@*][A-Za-z0-9@*]*)\s*\}")
+_RE_MACRO_DEF = re.compile(
+    r"\\(" + "|".join(_MACRO_DEF_BODIES) + r")\*?(?![a-zA-Z])"
+)
+_RE_DEF = re.compile(r"\\(?:def|gdef|edef|xdef)\\[A-Za-z@]+")
+_RE_LEFT = re.compile(r"\\left(?![a-zA-Z])")
+_RE_RIGHT = re.compile(r"\\right(?![a-zA-Z])")
+_RE_ESCAPED_BRACE = re.compile(r"(?<!\\)(?:\\\\)*\\[{}]")
+_RE_DOUBLE_DOLLAR = re.compile(r"(?<!\\)(?:\\\\)*\$\$")
+_RE_SINGLE_DOLLAR = re.compile(r"(?<!\\)(?:\\\\)*\$")
+_RE_PAREN_OPEN = re.compile(r"(?<!\\)(?:\\\\)*\\\(")
+_RE_PAREN_CLOSE = re.compile(r"(?<!\\)(?:\\\\)*\\\)")
+_RE_BRACKET_OPEN = re.compile(
+    r"(?<!\\)(?:\\\\)*\\\[(?!\s*-?\d+(?:\.\d+)?\s*(?:pt|mm|cm|in|ex|em|bp|dd|pc|sp)\s*\])"
+)
+_RE_BRACKET_CLOSE = re.compile(r"(?<!\\)(?:\\\\)*\\\]")
+_RE_MARKDOWN_FENCE = re.compile(r"```")
+_RE_ITEM = re.compile(r"\\item(?![a-zA-Z])")
+_LIST_ENVS = frozenset({
+    "itemize", "enumerate", "description", "list", "trivlist", "thebibliography",
+    "compactitem", "compactenum", "compactdesc", "inparaenum", "inparaitem",
+})
+_ITEM_LIST_ENVS = frozenset({
+    "itemize", "enumerate", "description", "compactitem", "compactenum", "compactdesc",
+    "inparaenum", "inparaitem",
+})
+_HARMLESS_LIST_MACROS = re.compile(
+    r"^\s*(?:\\(?:vspace\*?|hspace\*?|setlength|addtolength|small|footnotesize|scriptsize|"
+    r"tiny|large|Large|centering|raggedright|raggedleft|color|colorlet|label|index)"
+    r"(?:\{[^}]*\}|\[[^\]]*\])*\s*)*\s*(?:%.*)?$"
+)
+_RE_DOCCLASS = re.compile(r"\\documentclass\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}")
+_RE_BEGIN_DOC = re.compile(r"\\begin\s*\{document\}")
+_RE_END_DOC = re.compile(r"\\end\s*\{document\}")
+_RE_FRAME = re.compile(r"\\begin\s*\{frame\}")
+
+
+def _match_brace(s: str, i: int) -> int:
+    """Given s[i] == '{', returns the index of the matching '}', or -1."""
+    depth = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def mask_macro_definition_bodies(code: str) -> str:
+    """
+    Blanks the bodies of \\newcommand / \\newenvironment / \\def definitions.
+
+    The enclosing braces are kept, so brace balance is still validated; only the
+    template content inside is neutralised. Without this,
+    ``\\newcommand{\\openlist}{\\begin{itemize}}`` is reported as an unclosed
+    environment, which makes every later edit fail pre-commit validation.
+    """
+    if not code:
+        return code
+
+    out = list(code)
+    n = len(code)
+
+    def skip_ws(j: int) -> int:
+        while j < n and code[j] in " \t\r\n":
+            j += 1
+        return j
+
+    def skip_optional(j: int) -> int:
+        j = skip_ws(j)
+        while j < n and code[j] == "[":
+            k = code.find("]", j)
+            if k == -1:
+                return j
+            j = skip_ws(k + 1)
+        return j
+
+    def blank_span(a: int, b: int) -> None:
+        for k in range(a, b):
+            if out[k] != "\n":
+                out[k] = " "
+
+    for m in _RE_MACRO_DEF.finditer(code):
+        bodies = _MACRO_DEF_BODIES[m.group(1)]
+        j = skip_ws(m.end())
+        # The macro/environment name: either {\foo} or a bare \foo
+        if j < n and code[j] == "{":
+            k = _match_brace(code, j)
+            if k == -1:
+                continue
+            j = k + 1
+        elif j < n and code[j] == "\\":
+            j += 1
+            while j < n and (code[j].isalpha() or code[j] == "@"):
+                j += 1
+        j = skip_optional(j)
+        for _ in range(bodies):
+            j = skip_ws(j)
+            if j >= n or code[j] != "{":
+                break
+            k = _match_brace(code, j)
+            if k == -1:
+                break
+            blank_span(j + 1, k)
+            j = k + 1
+
+    for m in _RE_DEF.finditer(code):
+        j = m.end()
+        while j < n and code[j] not in "{\n":
+            j += 1
+        if j < n and code[j] == "{":
+            k = _match_brace(code, j)
+            if k != -1:
+                blank_span(j + 1, k)
+
+    return "".join(out)
+
+
+# Only these verbatim-like environments take a brace argument
+# (\begin{minted}{python}). Allowing one for all of them let
+# \begin{alltt}{ $ %\end{alltt} be read as a 16-character environment name.
+_ARG_VERBATIM_ENVS = frozenset({
+    "minted", "minted*", "filecontents", "filecontents*",
+    "SaveVerbatim", "SaveVerbatim*", "listing", "listing*",
+})
+
+_RE_VERBATIM_OPEN = re.compile(
+    r"\\begin\{(" + "|".join(re.escape(e) for e in VERBATIM_ENVS) + r")\}"
+    r"(?:\[[^\]\n]*\])?"
+)
+_RE_VERBATIM_ARG = re.compile(r"\{[^}\n]*\}")
+
+
+_RE_VERB_OPEN = re.compile(r"\\verb(\*?)([^a-zA-Z0-9\s*])")
+_RE_URL_OPEN = re.compile(r"\\(?:url|nolinkurl|path|href)\s*\{")
+
+
+def _mask_literal_regions(code: str) -> str:
+    r"""
+    Blanks every region whose content must not be read as LaTeX structure, in a
+    single left-to-right pass: % comments, verbatim-like environment bodies,
+    inline \verb spans and URL arguments.
+
+    These cannot be masked independently, because each decides what the others
+    mean. A % inside a \begin{verbatim} body or a \verb span is literal text; a
+    %20 inside \url{} is literal; and a \begin{lstlisting} inside a comment does
+    not open a block. Masking comments first ate the bodies of real verbatim
+    blocks; masking verbatim first let a commented-out usage example swallow the
+    % that disabled its own \end{lstlisting}, leaving a live orphan tag — a
+    false positive that, because every write validates the whole buffer, blocked
+    every edit to that document.
+
+    Scanning once in document order is the only way all of them stay correct.
+    Total length and newline count are preserved, so reported line numbers and
+    any offsets derived from the view stay accurate.
+    """
+    if not code:
+        return code
+
+    out = list(code)
+    n = len(code)
+
+    def blank(a: int, b: int) -> None:
+        for k in range(a, min(b, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    i = 0
+    while i < n:
+        ch = code[i]
+
+        if ch == "\\":
+            m = _RE_VERBATIM_OPEN.match(code, i)
+            if m:
+                env = m.group(1)
+                body_from = m.end()
+                if env in _ARG_VERBATIM_ENVS:
+                    arg = _RE_VERBATIM_ARG.match(code, body_from)
+                    if arg:
+                        body_from = arg.end()
+                closer = re.compile(r"\\end\{" + re.escape(env) + r"\}")
+                end_m = closer.search(code, body_from)
+                if end_m:
+                    blank(body_from, end_m.start())
+                    i = end_m.end()
+                    continue
+                # Unterminated: leave the remainder as ordinary text so real
+                # errors after it stay visible.
+                i = body_from
+                continue
+
+            m = _RE_VERB_OPEN.match(code, i)
+            if m:
+                delim = m.group(2)
+                # \verb cannot span lines in TeX, so the span is line-bounded.
+                line_end = code.find("\n", m.end())
+                if line_end == -1:
+                    line_end = n
+                close = code.find(delim, m.end(), line_end)
+                if close != -1:
+                    blank(m.end(), close)
+                    i = close + 1
+                    continue
+                i = m.end()
+                continue
+
+            m = _RE_URL_OPEN.match(code, i)
+            if m:
+                close = _match_brace(code, m.end() - 1)
+                if close != -1:
+                    blank(m.end(), close)
+                    i = close + 1
+                    continue
+                i = m.end()
+                continue
+
+            # Escaped character (\%, \\, \{ ...): consume both so \% is not a comment.
+            i += 2
+            continue
+
+        if ch == "%":
+            j = code.find("\n", i)
+            if j == -1:
+                j = n
+            blank(i, j)
+            i = j
+            continue
+
+        i += 1
+
+    return "".join(out)
+
+
+def clean_latex_for_validation(latex_code: str) -> str:
+    r"""
+    Neutralises content that must not be read as LaTeX structure: % comments,
+    verbatim-like environments, inline \verb, URL arguments and macro
+    definition bodies.
+
+    Every character is replaced in place, so both the total length and the exact
+    newline count are preserved and reported line numbers stay accurate. Callers
+    may therefore map any offset in the view straight back onto the input.
+    """
+    if not latex_code:
+        return ""
+
+    # 1. Comments, verbatim bodies, \verb spans and URL arguments (one pass:
+    #    each decides what the others mean).
+    cleaned = _mask_literal_regions(latex_code)
+
+    # 2. Macro definition bodies. The enclosing braces are kept, so genuine
+    #    brace imbalance is still caught; only the template content is blanked.
+    cleaned = mask_macro_definition_bodies(cleaned)
+
+    return cleaned
+
+
+def validate_latex_pre_commit(latex_code: str) -> Tuple[bool, List[str]]:
+    """
+    Strict pre-commit validation step for the edit pipeline.
+    Validates:
+    1. Markdown code fences are not accidentally embedded in LaTeX.
+    2. Every \\begin{X} has a matching \\end{X} in correct nesting order.
+    3. Lonely \\item is enclosed inside a valid list environment.
+    4. $, $$, \\( \\), \\[ \\] delimiters are balanced.
+    5. Braces { } are balanced with exact line reporting.
+    6. \\left and \\right are paired.
+
+    Comments, verbatim-like environments, URL arguments and macro definition
+    bodies are neutralised first (see ``clean_latex_for_validation``).
+
+    Returns:
+        (passed: bool, errors: List[str])
+    """
+    if not latex_code or not latex_code.strip():
+        return True, []
+
+    errors: List[str] = []
+    cleaned = clean_latex_for_validation(latex_code)
+    lines = cleaned.splitlines(keepends=True)
+
+    # 1. Environment Matching Stack & Markdown Fences
+    stack: List[Tuple[str, int]] = []
+    list_state: Dict[int, Dict[str, Any]] = {}
+
+    for idx, line in enumerate(lines, start=1):
+        if _RE_MARKDOWN_FENCE.search(line):
+            errors.append(f"Line {idx}: Markdown code fence (```) detected in LaTeX document")
+
+        # Check for lonely \item outside list environments or mark items inside lists
+        has_item_match = bool(_RE_ITEM.search(line))
+        if has_item_match:
+            in_list = any(
+                e[0] in _LIST_ENVS or e[0].endswith("item") or e[0].endswith("enum") or e[0].endswith("list")
+                for e in stack
+            )
+            if not in_list:
+                errors.append(f"Line {idx}: Lonely \\item outside list environment (must be inside itemize or enumerate)")
+            else:
+                for lvl, (e_name, _) in enumerate(stack):
+                    if e_name.rstrip("*") in _ITEM_LIST_ENVS and lvl in list_state:
+                        list_state[lvl]["has_item"] = True
+        elif stack and stack[-1][0].rstrip("*") in _ITEM_LIST_ENVS:
+            # Current innermost environment is a list, but no \item on this line
+            top_lvl = len(stack) - 1
+            if top_lvl in list_state and not list_state[top_lvl]["has_item"]:
+                stripped = line.strip()
+                if (
+                    stripped
+                    and not stripped.startswith("%")
+                    and not _HARMLESS_LIST_MACROS.match(line)
+                    and not _RE_ENV_TAG.search(line)
+                    and not list_state[top_lvl]["has_prose_before_item"]
+                ):
+                    list_state[top_lvl]["has_prose_before_item"] = True
+                    errors.append(
+                        f"Line {idx}: Text inside \\begin{{{stack[-1][0]}}} before the first \\item. "
+                        f"Move text before \\begin{{{stack[-1][0]}}} or prefix with \\item (LaTeX Error: Something's wrong--perhaps a missing \\item)."
+                    )
+
+        for m in _RE_ENV_TAG.finditer(line):
+            tag_type = m.group(1)
+            env_name = m.group(2)
+            if tag_type == "begin":
+                lvl = len(stack)
+                if env_name.rstrip("*") in _ITEM_LIST_ENVS:
+                    list_state[lvl] = {"has_item": False, "has_prose_before_item": False}
+                stack.append((env_name, idx))
+            elif tag_type == "end":
+                if not stack:
+                    errors.append(f"Line {idx}: Unmatched \\end{{{env_name}}} (no open environment)")
+                elif stack[-1][0] == env_name:
+                    top_lvl = len(stack) - 1
+                    if env_name.rstrip("*") in _ITEM_LIST_ENVS and top_lvl in list_state:
+                        if not list_state[top_lvl]["has_item"]:
+                            errors.append(
+                                f"Line {idx}: Empty \\begin{{{env_name}}} environment from line {stack[-1][1]} "
+                                f"with no \\item entries (LaTeX Error: Something's wrong--perhaps a missing \\item)."
+                            )
+                        list_state.pop(top_lvl, None)
+                    stack.pop()
+                else:
+                    # Check if matching begin is further up the stack
+                    matching_idx = None
+                    for s_i in range(len(stack) - 1, -1, -1):
+                        if stack[s_i][0] == env_name:
+                            matching_idx = s_i
+                            break
+                    if matching_idx is not None:
+                        for unclosed_env, unclosed_line in stack[matching_idx + 1:]:
+                            errors.append(f"Line {idx}: \\begin{{{unclosed_env}}} from line {unclosed_line} was never closed before \\end{{{env_name}}}")
+                            unclosed_lvl = len(stack) - 1
+                            list_state.pop(unclosed_lvl, None)
+                        stack = stack[:matching_idx]
+                        list_state.pop(matching_idx, None)
+                    else:
+                        top_env, top_line = stack.pop()
+                        list_state.pop(len(stack), None)
+                        errors.append(
+                            f"Line {idx}: Mismatched \\end{{{env_name}}}, expected \\end{{{top_env}}} from line {top_line}"
+                        )
+
+    for env_name, line_no in stack:
+        errors.append(f"Line {line_no}: Unclosed \\begin{{{env_name}}}")
+
+    # 2. Math Delimiters Balance
+    double_dollar_matches = list(_RE_DOUBLE_DOLLAR.finditer(cleaned))
+    if len(double_dollar_matches) % 2 != 0:
+        errors.append(f"Unbalanced '$$' display math delimiters (found {len(double_dollar_matches)} occurrences)")
+
+    temp_no_dd = _RE_DOUBLE_DOLLAR.sub("", cleaned)
+    single_dollar_matches = list(_RE_SINGLE_DOLLAR.finditer(temp_no_dd))
+    if len(single_dollar_matches) % 2 != 0:
+        errors.append(f"Unbalanced '$' inline math delimiters (found {len(single_dollar_matches)} occurrences)")
+
+    open_paren_math = len(list(_RE_PAREN_OPEN.finditer(cleaned)))
+    close_paren_math = len(list(_RE_PAREN_CLOSE.finditer(cleaned)))
+    if open_paren_math != close_paren_math:
+        errors.append(f"Unbalanced math mode delimiters: \\( ({open_paren_math}) vs \\) ({close_paren_math})")
+
+    open_bracket_math = len(list(_RE_BRACKET_OPEN.finditer(cleaned)))
+    close_bracket_math = len(list(_RE_BRACKET_CLOSE.finditer(cleaned)))
+    if open_bracket_math != close_bracket_math:
+        errors.append(f"Unbalanced display math delimiters: \\[ ({open_bracket_math}) vs \\] ({close_bracket_math})")
+
+    # 3. Curly Braces Balance { }
+    brace_depth = 0
+    brace_stack: List[int] = []
+    for idx, line in enumerate(lines, start=1):
+        line_clean = _RE_ESCAPED_BRACE.sub("", line)
+        for char in line_clean:
+            if char == "{":
+                brace_depth += 1
+                brace_stack.append(idx)
+            elif char == "}":
+                brace_depth -= 1
+                if brace_stack:
+                    brace_stack.pop()
+                else:
+                    errors.append(f"Line {idx}: Extra closing brace '}}'")
+                if brace_depth < 0:
+                    brace_depth = 0
+
+    if brace_depth > 0:
+        line_prefix = f"Line {brace_stack[-1]}: " if brace_stack else ""
+        errors.append(f"{line_prefix}Unclosed '{{' curly brace(s) (nesting depth: {brace_depth})")
+
+    # 4. \left / \right pairing
+    n_left = len(_RE_LEFT.findall(cleaned))
+    n_right = len(_RE_RIGHT.findall(cleaned))
+    if n_left != n_right:
+        errors.append(f"Unbalanced \\left ({n_left}) vs \\right ({n_right})")
+
+    # 5. TikZ Coordinate Arithmetic Library Check
+    if re.search(r"\(\s*\$[^)]+\)", cleaned) and not re.search(r"\\usetikzlibrary\s*\{[^}]*\bcalc\b", cleaned):
+        errors.append("TikZ coordinate calculation '($...$)' requires '\\usetikzlibrary{calc}' loaded in preamble.")
+
+    return len(errors) == 0, errors
+
+
+_RE_ERROR_LINE_PREFIX = re.compile(r"^Line \d+:\s*")
+_RE_ERROR_NUMBERS = re.compile(r"\d+")
+
+
+def _error_signature(message: str) -> str:
+    """
+    Reduces a validation error to a position-independent signature.
+
+    ``Line 12: Unclosed \\begin{itemize}`` and ``Line 48: Unclosed
+    \\begin{itemize}`` are the *same* defect seen at two offsets; an edit that
+    moves a pre-existing error around must not be reported as having created it.
+    """
+    stripped = _RE_ERROR_LINE_PREFIX.sub("", message)
+    return _RE_ERROR_NUMBERS.sub("#", stripped).strip()
+
+
+def validate_document_invariants(before: str, after: str) -> Tuple[bool, List[str]]:
+    """
+    Validates document structure invariants between before and after edits.
+    Guarantees that critical document boundaries, documentclass, and beamer
+    structure are preserved unless explicitly modified.
+    """
+    if not before or not before.strip():
+        errors: List[str] = []
+        if after and after.strip():
+            if _RE_MARKDOWN_FENCE.search(after):
+                errors.append("Markdown code fences (```) detected in candidate document.")
+            m_cls = _RE_DOCCLASS.search(after)
+            m_doc = _RE_BEGIN_DOC.search(after)
+            if m_cls and m_doc and m_cls.start() > m_doc.start():
+                errors.append("Document invariant: \\documentclass appears after \\begin{document}.")
+        return len(errors) == 0, errors
+
+    errors: List[str] = []
+
+    # 1. Document class preservation
+    if _RE_DOCCLASS.search(before) and not _RE_DOCCLASS.search(after):
+        errors.append("Document invariant violated: \\documentclass was removed.")
+
+    # 2. Document boundaries preservation
+    if _RE_BEGIN_DOC.search(before) and not _RE_BEGIN_DOC.search(after):
+        errors.append("Document invariant violated: \\begin{document} was removed.")
+    if _RE_END_DOC.search(before) and not _RE_END_DOC.search(after):
+        errors.append("Document invariant violated: \\end{document} was removed.")
+
+    # 3. Duplicate document boundaries
+    if len(_RE_BEGIN_DOC.findall(after)) > 1:
+        errors.append("Document invariant violated: Multiple \\begin{document} declarations.")
+    if len(_RE_END_DOC.findall(after)) > 1:
+        errors.append("Document invariant violated: Multiple \\end{document} declarations.")
+
+    # 4. Preamble order: documentclass must precede begin{document}
+    m_cls = _RE_DOCCLASS.search(after)
+    m_begin = _RE_BEGIN_DOC.search(after)
+    if m_cls and m_begin and m_cls.start() > m_begin.start():
+        errors.append("Document invariant violated: \\documentclass appears after \\begin{document}.")
+
+    # 5. Beamer frame integrity: never wipe out all frames in a Beamer document
+    frames_before = len(_RE_FRAME.findall(before))
+    frames_after = len(_RE_FRAME.findall(after))
+    if frames_before >= 1 and frames_after == 0 and len(after.strip()) > 50:
+        errors.append("Document invariant violated: All Beamer frames were removed.")
+
+    return len(errors) == 0, errors
+
+
+def classify_edit_risk(before: str, after: str) -> Dict[str, Any]:
+    """
+    Classifies the risk level of an edit (LOW, MEDIUM, HIGH) based on scope,
+    structure, and preamble changes.
+    """
+    reasons: List[str] = []
+    if not before.strip():
+        return {"risk": "high", "reasons": ["Creating new document from scratch"]}
+
+    b_lines = before.splitlines()
+    a_lines = after.splitlines()
+
+    # Preamble changes
+    m_begin_b = _RE_BEGIN_DOC.search(before)
+    m_begin_a = _RE_BEGIN_DOC.search(after)
+    preamble_changed = False
+    if m_begin_b and m_begin_a:
+        preamble_b = before[:m_begin_b.start()]
+        preamble_a = after[:m_begin_a.start()]
+        if preamble_b.strip() != preamble_a.strip():
+            preamble_changed = True
+            reasons.append("Preamble modified")
+
+    # Documentclass change
+    m_cls_b = _RE_DOCCLASS.search(before)
+    m_cls_a = _RE_DOCCLASS.search(after)
+    if m_cls_b and m_cls_a and m_cls_b.group(0).strip() != m_cls_a.group(0).strip():
+        reasons.append("Documentclass modified")
+
+    # Scale of edit
+    changed_count = abs(len(a_lines) - len(b_lines)) + sum(1 for x, y in zip(b_lines, a_lines) if x != y)
+    total = max(1, len(b_lines))
+    ratio = changed_count / total
+
+    if (ratio > 0.5 and total >= 8) or len(a_lines) > total * 2:
+        reasons.append(f"Large document replacement ({int(ratio * 100)}% lines modified)")
+
+    if any("documentclass" in r.lower() for r in reasons) or any("large" in r.lower() for r in reasons):
+        return {"risk": "high", "reasons": reasons}
+    if preamble_changed or (ratio > 0.25 and changed_count > 2):
+        return {"risk": "medium", "reasons": reasons}
+    return {"risk": "low", "reasons": reasons or ["Localized edit"]}
+
+
+def validate_edit(before: str, after: str) -> Tuple[bool, List[str]]:
+    """
+    Differential pre-commit validation: does ``after`` introduce structural
+    errors that ``before`` did not already have?
+
+    Every write path validates the *whole* buffer, so an absolute check makes a
+    single pre-existing defect — a custom list environment from a .cls, an
+    \\end{...} the regex grammar cannot pair, a stray brace in a package the
+    validator does not model — reject **every** subsequent edit. The agent then
+    burns its entire step budget retrying edits that can never pass, and the
+    final rollback discards the whole run.
+
+    Only *new* defects are the edit's fault, so only new defects block it.
+
+    Returns:
+        (passed, new_errors) — ``new_errors`` lists only the defects the edit added.
+    """
+    ok_after, errors_after = validate_latex_pre_commit(after)
+    if ok_after:
+        inv_ok, inv_errors = validate_document_invariants(before, after)
+        if not inv_ok:
+            return False, inv_errors
+        return True, []
+
+    _, errors_before = validate_latex_pre_commit(before)
+
+    # Per-occurrence errors ("Line N: Unclosed \begin{itemize}") compare as a multiset.
+    baseline: Dict[str, int] = {}
+    for e in errors_before:
+        if _aggregate_kind(e):
+            continue
+        sig = _error_signature(e)
+        baseline[sig] = baseline.get(sig, 0) + 1
+
+    new_errors: List[str] = []
+    aggregate_after: List[str] = []
+    for e in errors_after:
+        if _aggregate_kind(e):
+            aggregate_after.append(e)
+            continue
+        sig = _error_signature(e)
+        if baseline.get(sig, 0) > 0:
+            baseline[sig] -= 1
+        else:
+            new_errors.append(e)
+
+    # Whole-document checks (brace depth, $ parity, \( \) / \[ \] / \left \right counts)
+    # produce ONE message whatever the size of the imbalance, so with the numbers
+    # stripped, a document that already had one unclosed brace accepted any number of
+    # new ones. They are compared by magnitude instead; when the imbalance is unchanged
+    # but non-zero, the edit's own hunks must not change that balance.
+    if aggregate_after:
+        clean_before = clean_latex_for_validation(before)
+        clean_after = clean_latex_for_validation(after)
+        m_before = _aggregate_imbalance(clean_before)
+        m_after = _aggregate_imbalance(clean_after)
+        for e in aggregate_after:
+            kind = _aggregate_kind(e)
+            if m_after[kind] > m_before[kind]:
+                new_errors.append(e)
+            elif m_after[kind] == m_before[kind] > 0 and _hunks_change_balance(
+                    before, after, clean_before, clean_after, kind):
+                new_errors.append(f"{e} — the edited text is itself unbalanced")
+
+    inv_ok, inv_errors = validate_document_invariants(before, after)
+    if not inv_ok:
+        new_errors.extend(inv_errors)
+
+    return len(new_errors) == 0, new_errors
+
+
+_AGGREGATE_PREFIXES = (
+    ("brace", "Unclosed '{' curly brace"),
+    ("dd", "Unbalanced '$$'"),
+    ("dollar", "Unbalanced '$' "),
+    ("paren", "Unbalanced math mode delimiters"),
+    ("bracket", "Unbalanced display math delimiters"),
+    ("leftright", "Unbalanced \\left"),
+)
+
+
+def _aggregate_kind(message: str) -> Optional[str]:
+    msg = _RE_ERROR_LINE_PREFIX.sub("", message)
+    for kind, prefix in _AGGREGATE_PREFIXES:
+        if msg.startswith(prefix) or (kind == "brace" and "Unclosed '{' curly brace" in message):
+            return kind
+    return None
+
+
+def _signed_balance(text: str, kind: str) -> int:
+    """Signed balance of ``text`` (cleaned) in one dimension; parity for $ / $$."""
+    if kind == "brace":
+        t = _RE_ESCAPED_BRACE.sub("", text)
+        return t.count("{") - t.count("}")
+    if kind == "dd":
+        return len(_RE_DOUBLE_DOLLAR.findall(text)) % 2
+    if kind == "dollar":
+        return len(_RE_SINGLE_DOLLAR.findall(_RE_DOUBLE_DOLLAR.sub("", text))) % 2
+    if kind == "paren":
+        return len(_RE_PAREN_OPEN.findall(text)) - len(_RE_PAREN_CLOSE.findall(text))
+    if kind == "bracket":
+        return len(_RE_BRACKET_OPEN.findall(text)) - len(_RE_BRACKET_CLOSE.findall(text))
+    if kind == "leftright":
+        return len(_RE_LEFT.findall(text)) - len(_RE_RIGHT.findall(text))
+    return 0
+
+
+def _aggregate_imbalance(cleaned: str) -> Dict[str, int]:
+    """Size of each whole-document imbalance validate_latex_pre_commit reports."""
+    depth = 0
+    for line in cleaned.splitlines():
+        for char in _RE_ESCAPED_BRACE.sub("", line):
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth = max(0, depth - 1)  # extra closers are reported per line instead
+    return {
+        "brace": depth,
+        "dd": _signed_balance(cleaned, "dd"),
+        "dollar": _signed_balance(cleaned, "dollar"),
+        "paren": abs(_signed_balance(cleaned, "paren")),
+        "bracket": abs(_signed_balance(cleaned, "bracket")),
+        "leftright": abs(_signed_balance(cleaned, "leftright")),
+    }
+
+
+def _hunks_change_balance(before: str, after: str, clean_before: str, clean_after: str, kind: str) -> bool:
+    """True when some changed hunk's own balance in ``kind`` differs from the text it replaced."""
+    import difflib
+    raw_a, raw_b = before.splitlines(), after.splitlines()
+    cl_a, cl_b = clean_before.splitlines(), clean_after.splitlines()
+    if len(cl_a) != len(raw_a) or len(cl_b) != len(raw_b):
+        return False
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, raw_a, raw_b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if _signed_balance("\n".join(cl_a[i1:i2]), kind) != _signed_balance("\n".join(cl_b[j1:j2]), kind):
+            return True
+    return False
+
+
+@dataclass
+class CoverageValidationResult:
+    passed: bool
+    total_chunks: int
+    edited_chunks: int
+    missing_chunk_ids: List[str] = field(default_factory=list)
+    missing_chunk_titles: List[str] = field(default_factory=list)
+    leftover_terms_found: List[Dict[str, Any]] = field(default_factory=list)
+    feedback_message: str = ""
+    # Expansion scope only: one entry per unit, measured before vs. after.
+    unit_growth: List[Dict[str, Any]] = field(default_factory=list)
+
+
+# How much a block must grow before it counts as "elaborated". Measured, because
+# the previous gate asked only whether a chunk had been *touched* — and a
+# one-line insert into every section satisfied that while the document stayed
+# the length it was. Proportional so a long section is not forced to double,
+# capped so a very long one is not asked for an essay, floored so an empty or
+# near-empty section cannot pass on a sentence.
+EXPANSION_GROWTH_RATIO = 0.60
+
+# The floor is the number that decides whether an "elaborate this" is worth
+# having. At 200 characters a block cleared the gate on a long paragraph, which
+# is a reworded heading with a sentence under it — measured on real runs, and
+# the reason the gate was raised: an elaboration is at least a thousand
+# characters of new material, about two substantial paragraphs.
+EXPANSION_MIN_NEW_CHARS = max(200, int(os.getenv("EXPANSION_MIN_NEW_CHARS", "1000") or 1000))
+EXPANSION_GROWTH_FLOOR = EXPANSION_MIN_NEW_CHARS
+EXPANSION_GROWTH_CAP = max(EXPANSION_GROWTH_FLOOR, 2 * EXPANSION_MIN_NEW_CHARS)
+
+# A slide is not a section. A Beamer frame holds perhaps a dozen lines before it
+# overflows, so a thousand more characters *inside one frame* asks for a defect:
+# against the old 600-character prose target the model rewrote the same two
+# frames five times trying to clear it. The amount is the same — a block owes at
+# least EXPANSION_MIN_NEW_CHARS and a deck is not exempt — but on a deck it is
+# reached the way a deck grows: follow-up frames on the same topic, which the
+# attribution below credits to it. A slide owes exactly the minimum and never
+# more, however long it already is: asking a 40-line slide for twice as much
+# again only invites the overfilling this constant exists to prevent.
+EXPANSION_SLIDE_FLOOR = EXPANSION_MIN_NEW_CHARS
+EXPANSION_SLIDE_CAP = EXPANSION_SLIDE_FLOOR
+_SLIDE_KINDS = ("frame", "page")
+
+# What an expansion may NOT do: drop what was there. "Expand" means add to the
+# existing text, and a model that summarises a section while lengthening it
+# satisfies a pure growth test. Retention is the share of the block's original
+# content words still present afterwards; below this it is a rewrite, not an
+# elaboration, and it is reported as text lost.
+EXPANSION_MIN_RETENTION = 0.90
+# Below this many content words the measure is noise (a two-line stub), so a
+# short block is judged on growth alone.
+_RETENTION_MIN_WORDS = 12
+
+_RE_TEX_COMMAND = re.compile(r"\\[a-zA-Z@]+\*?")
+_RE_TEX_MATH = re.compile(r"\$\$.*?\$\$|\$[^$]*\$|\\\[.*?\\\]|\\\(.*?\\\)", re.DOTALL)
+
+
+def expansion_target_delta(before: int, kind: str = "section") -> int:
+    """Characters a block of ``before`` characters must gain to count as expanded."""
+    if kind in _SLIDE_KINDS:
+        return EXPANSION_SLIDE_FLOOR
+    return max(EXPANSION_GROWTH_FLOOR,
+               min(int(before * EXPANSION_GROWTH_RATIO), EXPANSION_GROWTH_CAP))
+
+
+def content_words(latex_text: str) -> List[str]:
+    """
+    The words a reader sees, with LaTeX markup and math removed.
+
+    Used to measure what an edit kept, and how much new material it really
+    added. Math is dropped rather than kept as tokens because an equation is one
+    opaque blob to a word measure and changed spacing inside it would read as
+    lost prose.
+    """
+    if not latex_text:
+        return []
+    plain = _RE_TEX_MATH.sub(" ", latex_text)
+    plain = _RE_TEX_COMMAND.sub(" ", plain)
+    plain = re.sub(r"[{}\[\]~^&%$#_]", " ", plain)
+    return [w for w in re.split(r"[^0-9A-Za-z]+", plain.lower()) if len(w) >= 4]
+
+
+def measure_retention(before_text: str, after_text: str) -> Optional[float]:
+    """
+    Share of the original block's content words still present afterwards, as a
+    multiset (so deleting one of three occurrences of a word counts).
+
+    ``None`` when the block is too short for the measure to mean anything.
+    """
+    before = content_words(before_text)
+    if len(before) < _RETENTION_MIN_WORDS:
+        return None
+    after_counts: Dict[str, int] = {}
+    for w in content_words(after_text):
+        after_counts[w] = after_counts.get(w, 0) + 1
+    kept = 0
+    for w in before:
+        if after_counts.get(w, 0) > 0:
+            after_counts[w] -= 1
+            kept += 1
+    return kept / len(before)
+
+
+def _unit_match_key(unit: "ExpansionUnit") -> str:
+    return re.sub(r"[^a-z0-9]+", "", (unit.title or unit.unit_id).lower())
+
+
+def _title_tokens(title: str) -> Set[str]:
+    """The distinctive words of a heading, for matching a block that was renamed."""
+    return {w for w in re.split(r"[^a-z0-9]+", (title or "").lower()) if len(w) >= 4}
+
+
+def measure_expansion(original_code: str, current_code: str) -> List[Dict[str, Any]]:
+    """
+    Every expansion unit of the ORIGINAL document, with the size it has now.
+
+    Units are paired by stable node ID first, then by normalized title, then by
+    ordinal among units of the same kind. Nothing here consults the workspace's
+    touched-chunk set: those ids are recorded against the live buffer's
+    positional index while the unit list comes from the original, so one
+    inserted section used to shift the credit onto the wrong block.
+    """
+    before_units = get_expansion_units(original_code)
+    # The after side is every expandable heading, not just the leaves: a block
+    # that gained a subsection is no longer a leaf, and matching leaves to
+    # leaves reported it as deleted.
+    after_units = get_expansion_regions(current_code)
+
+    # Three passes, in order of confidence, so one deleted block cannot shunt
+    # every later block onto its neighbour: stable node ID, then normalized
+    # title (the model renamed a heading while expanding it), then position
+    # among whatever is still unmatched on both sides.
+    match: Dict[int, Optional[ExpansionUnit]] = {i: None for i in range(len(before_units))}
+    used: Set[int] = set()
+
+    by_id: Dict[str, List[ExpansionUnit]] = {}
+    by_title: Dict[str, List[ExpansionUnit]] = {}
+    for u in after_units:
+        by_id.setdefault(u.unit_id, []).append(u)
+        by_title.setdefault(_unit_match_key(u), []).append(u)
+
+    for key_fn, table in ((lambda u: u.unit_id, by_id), (_unit_match_key, by_title)):
+        for i, u in enumerate(before_units):
+            if match[i] is not None:
+                continue
+            for cand in table.get(key_fn(u), []):
+                if id(cand) not in used:
+                    match[i] = cand
+                    used.add(id(cand))
+                    break
+
+    leftover = [u for u in after_units if id(u) not in used]
+
+    # A block the edit reshaped keeps its subject even when it loses its ID: a
+    # `\\section{Conclusion}` rewritten as three "Conclusion: …" frames is the
+    # conclusion, expanded. Matched by the words of the title, with a clear lead
+    # required over the runner-up — the same discipline the locator and the
+    # imported-figure matcher use, so an ambiguous title matches nothing.
+    # Only words that single out one block are usable: in a document of
+    # "Topic 1 / Topic 2 / Topic 3" the word "topic" identifies nothing, and a
+    # deleted Topic 3 must stay reported as deleted rather than claim Topic 1.
+    token_owners: Dict[str, int] = {}
+    for u in before_units:
+        for w in _title_tokens(u.title):
+            token_owners[w] = token_owners.get(w, 0) + 1
+    for i, u in enumerate(before_units):
+        if match[i] is not None or not leftover:
+            continue
+        want = {w for w in _title_tokens(u.title) if token_owners.get(w) == 1}
+        if not want:
+            continue
+        # Ties are expected and fine here: several new blocks on one subject
+        # ("Conclusion: Synthesis", "Conclusion: Outlook") all belong to it, and
+        # the positional sweep below gives the rest to whichever is taken first.
+        scored = [(len(want & _title_tokens(c.title)) / len(want), j)
+                  for j, c in enumerate(leftover)]
+        best = max(score for score, _ in scored)
+        if best >= 0.5:
+            j = min(j for score, j in scored if score == best)
+            match[i] = leftover.pop(j)
+            used.add(id(match[i]))
+
+    for i, u in enumerate(before_units):
+        if match[i] is not None:
+            continue
+        for j, cand in enumerate(leftover):
+            if cand.kind == u.kind:
+                match[i] = cand
+                used.add(id(cand))
+                leftover.pop(j)
+                break
+
+    # Blocks that are new in this edit belong to the topic they were added
+    # under: "one more slide on each topic" and "a subsection per section" are
+    # expansions of that topic, and scoring only the original block's own text
+    # would report them as no change at all.
+    # A region that overlaps a matched one is not new material: it is either a
+    # block inside it (already counted in that subtree) or the container around
+    # it (whose size is other units' text). Only a genuinely new, disjoint block
+    # can be attributed to the topic it was added under.
+    matched_spans = [(m.start_line, m.end_line) for m in match.values() if m is not None]
+    leftover = [
+        u for u in leftover
+        if not any(u.start_line <= hi and lo <= u.end_line for lo, hi in matched_spans)
+    ]
+    after_pos = {id(u): n for n, u in enumerate(after_units)}
+    matched_sorted = sorted(
+        ((after_pos[id(m)], i) for i, m in match.items() if m is not None),
+        key=lambda pair: pair[0],
+    )
+    added: Dict[int, int] = {}
+    added_text: Dict[int, List[str]] = {}
+    for new_unit in leftover:
+        pos = after_pos[id(new_unit)]
+        owner = None
+        for mpos, i in matched_sorted:
+            if mpos < pos:
+                owner = i
+            else:
+                break
+        if owner is not None:
+            added[owner] = added.get(owner, 0) + new_unit.size
+            added_text.setdefault(owner, []).append(new_unit.text)
+
+    rows: List[Dict[str, Any]] = []
+    for i, u in enumerate(before_units):
+        m = match[i]
+        after = (m.size if m is not None else 0) + added.get(i, 0)
+        target = expansion_target_delta(u.size, u.kind)
+        grew = (after - u.size) >= target
+        # Did the block KEEP what it had? A model that lengthens a section while
+        # summarising away half of it passes a pure growth test, and the user
+        # loses text they wrote. Follow-up blocks credited to this topic count
+        # as part of it: text the edit moved into a new sibling slide is not
+        # lost, it is where a deck is supposed to put it.
+        kept_text = ((m.text if m is not None else "")
+                     + "\n" + "\n".join(added_text.get(i, [])))
+        retention = measure_retention(u.text, kept_text) if m is not None else 0.0
+        preserved = retention is None or retention >= EXPANSION_MIN_RETENTION
+        rows.append({
+            "unit_id": u.unit_id,
+            "title": u.title,
+            "kind": u.kind,
+            "before": u.size,
+            "after": after,
+            "delta": after - u.size,
+            "target": target,
+            "retention": None if retention is None else round(retention, 3),
+            "preserved": bool(preserved),
+            "ok": grew and preserved,
+            "missing": m is None,
+        })
+    return rows
+
+
+def _expansion_coverage(workspace: Any) -> CoverageValidationResult:
+    """Coverage for FULL_DOCUMENT_EXPANSION: did every block measurably grow?"""
+    original = workspace.get_original() if hasattr(workspace, "get_original") else ""
+    current = workspace.get_buffer() if hasattr(workspace, "get_buffer") else ""
+
+    rows = measure_expansion(original, current)
+    if not rows:
+        return CoverageValidationResult(
+            passed=True, total_chunks=0, edited_chunks=0,
+            feedback_message="Document has no distinct content blocks to expand.",
+        )
+
+    done = [r for r in rows if r["ok"]]
+    pending = [r for r in rows if not r["ok"]]
+    if not pending:
+        logger.info(f"Expansion coverage PASSED: all {len(rows)} blocks grew past their target.")
+        return CoverageValidationResult(
+            passed=True, total_chunks=len(rows), edited_chunks=len(rows),
+            unit_growth=rows,
+            feedback_message=f"Expansion verified: all {len(rows)} blocks measurably expanded.",
+        )
+
+    def _line(r: Dict[str, Any]) -> str:
+        head = (f"  - `{r['unit_id']}` ({r['title']}): {r['before']} \u2192 {r['after']} chars "
+                f"({r['delta']:+d}); needs at least +{r['target']}")
+        if r["missing"]:
+            return head + ("  [GONE from the document. If you replaced a block that contained it, "
+                           "put it back and edit the inner block instead.]")
+        if r["delta"] < 0:
+            return head + ("  [This block LOST text. Restore what you removed \u2014 expanding means "
+                           "adding to what is there.]")
+        if not r.get("preserved", True):
+            pct = int((r.get("retention") or 0) * 100)
+            return head + (f"  [REWRITTEN, not expanded: only {pct}% of the original wording of this "
+                           "block survives. Put the original text back verbatim and ADD new material "
+                           "around it \u2014 do not summarise, reword or condense what the user wrote.]")
+        return head
+
+    listing = "\n".join(_line(r) for r in pending[:25])
+    more = f"\n  \u2026 and {len(pending) - 25} more" if len(pending) > 25 else ""
+    feedback = (
+        "EXPANSION COVERAGE FAILED: the user asked for every section to be elaborated, and "
+        f"{len(done)}/{len(rows)} blocks have measurably grown.\n"
+        f"These {len(pending)} have not been expanded (too little added, or the original text was "
+        f"replaced rather than added to):\n"
+        f"{listing}{more}\n\n"
+        "ACTION REQUIRED: for each one, add at least the stated number of characters of substantive "
+        "new material \u2014 2\u20134 full paragraphs of technical prose, plus an equation, table, "
+        "worked example or enumerated analysis where the topic admits one \u2014 with "
+        "`rewrite_chunk(unit_id, new_content)` or `insert_into_chunk(unit_id, content)`. "
+        "KEEP every sentence the block already has, verbatim and in place, and write the new text "
+        "around it; a block marked REWRITTEN lost the user's own wording and must have it restored. "
+        "Do not pad with restatements of what is already there, and do not invent facts, numbers or "
+        "citations the document and its sources do not support."
+    )
+    logger.warning(f"Expansion coverage failed: {len(pending)}/{len(rows)} blocks not expanded.")
+    return CoverageValidationResult(
+        passed=False, total_chunks=len(rows), edited_chunks=len(done),
+        missing_chunk_ids=[r["unit_id"] for r in pending],
+        missing_chunk_titles=[r["title"] for r in pending],
+        unit_growth=rows,
+        feedback_message=feedback,
+    )
+
+
+def validate_coverage(
+    workspace: Any,
+    user_instruction: str,
+    scope: str = "FULL_DOCUMENT_REWRITE",
+    forbidden_terms: Optional[List[str]] = None,
+) -> CoverageValidationResult:
+    """
+    Validates that:
+    1. Every content chunk in the original document was touched/rewritten in full-rewrite mode.
+    2. No forbidden or obsolete topic terms remain in the updated shadow buffer.
+    """
+    # Expansion is judged by measurement, not by which chunk ids were touched:
+    # a one-line insert into every section satisfied the touch test while leaving
+    # the document the length it was, which is exactly the reported failure.
+    if scope == "FULL_DOCUMENT_EXPANSION" or "FULL_DOCUMENT_EXPANSION" in scope:
+        return _expansion_coverage(workspace)
+
+    doc_index = DocumentIndex()
+    orig_code = workspace.get_original() if hasattr(workspace, "get_original") else ""
+    current_code = workspace.get_buffer() if hasattr(workspace, "get_buffer") else ""
+
+    content_chunks = doc_index.get_content_chunks(orig_code)
+    total_content_chunks = len(content_chunks)
+    touched_ids: Set[str] = workspace.get_touched_chunks() if hasattr(workspace, "get_touched_chunks") else set()
+
+    # If document has no structural content chunks (e.g. single small document or empty), coverage is trivially satisfied
+    if total_content_chunks == 0:
+        return CoverageValidationResult(
+            passed=True,
+            total_chunks=0,
+            edited_chunks=0,
+            feedback_message="Document has no distinct content chunks to validate.",
+        )
+
+    # 1. Chunk Coverage Check
+    missing_chunks: List[DocumentChunk] = [c for c in content_chunks if c.chunk_id not in touched_ids]
+    edited_count = total_content_chunks - len(missing_chunks)
+
+    is_rewrite = scope == "FULL_DOCUMENT_REWRITE" or "FULL_DOCUMENT_REWRITE" in scope
+    is_expansion = scope == "FULL_DOCUMENT_EXPANSION" or "FULL_DOCUMENT_EXPANSION" in scope
+
+    if missing_chunks and (is_rewrite or is_expansion):
+        missing_ids = [c.chunk_id for c in missing_chunks]
+        missing_titles = [c.title for c in missing_chunks]
+        chunks_bullet_list = "\n".join([f"  - `{c.chunk_id}`: {c.title}" for c in missing_chunks])
+
+        mode_name = "FULL_DOCUMENT_EXPANSION" if is_expansion else "FULL_DOCUMENT_REWRITE"
+        action_name = "expand and detail" if is_expansion else "replace"
+        tool_hint = "`insert_into_chunk(chunk_id, ...)` or `rewrite_chunk(chunk_id, ...)` or `replace_text(...)`" if is_expansion else "`rewrite_chunk(chunk_id, new_content)`"
+
+        feedback = (
+            f"COVERAGE CHECK FAILED: In {mode_name} mode, you must {action_name} all content chunks across the document.\n"
+            f"You have edited {edited_count}/{total_content_chunks} content chunks.\n"
+            f"The following {len(missing_chunks)} chunk(s) have NOT been touched:\n"
+            f"{chunks_bullet_list}\n\n"
+            f"ACTION REQUIRED: Use {tool_hint} for each unedited chunk before setting done=true."
+        )
+
+        logger.warning(f"Coverage check failed ({mode_name}): {len(missing_chunks)} chunks untouched: {missing_ids}")
+        return CoverageValidationResult(
+            passed=False,
+            total_chunks=total_content_chunks,
+            edited_chunks=edited_count,
+            missing_chunk_ids=missing_ids,
+            missing_chunk_titles=missing_titles,
+            feedback_message=feedback,
+        )
+
+    # 2. Leftover Content & Forbidden Terms Sweep
+    leftover_matches: List[Dict[str, Any]] = []
+    if forbidden_terms:
+        for term in forbidden_terms:
+            t = term.strip()
+            if not t or len(t) < 3:
+                continue
+            # Search current buffer
+            grep_results = workspace.grep(t) if hasattr(workspace, "grep") else []
+            valid_hits = [g for g in grep_results if "line_no" in g]
+            if valid_hits:
+                leftover_matches.append({
+                    "term": t,
+                    "count": len(valid_hits),
+                    "lines": [h["line_no"] for h in valid_hits[:5]],
+                })
+
+    if leftover_matches and (scope == "FULL_DOCUMENT_REWRITE" or "FULL_DOCUMENT_REWRITE" in scope):
+        summary_items = [f"'{m['term']}' (found on lines {m['lines']})" for m in leftover_matches]
+        summary_str = ", ".join(summary_items)
+        feedback = (
+            f"LEFTOVER CONTENT CHECK FAILED: The following terms from the old document/topic were found remaining:\n"
+            f"  {summary_str}\n\n"
+            f"ACTION REQUIRED: Replace or remove these obsolete topic terms using `rewrite_chunk` or `str_replace` before finishing."
+        )
+        logger.warning(f"Leftover terms check failed: {summary_str}")
+        return CoverageValidationResult(
+            passed=False,
+            total_chunks=total_content_chunks,
+            edited_chunks=edited_count,
+            leftover_terms_found=leftover_matches,
+            feedback_message=feedback,
+        )
+
+    # All checks passed
+    logger.info(f"Coverage check PASSED: all {total_content_chunks} chunks edited, 0 leftover forbidden terms.")
+    return CoverageValidationResult(
+        passed=True,
+        total_chunks=total_content_chunks,
+        edited_chunks=total_content_chunks,
+        missing_chunk_ids=[],
+        missing_chunk_titles=[],
+        feedback_message=f"Coverage verified: all {total_content_chunks} chunks rewritten and verified.",
+    )

@@ -1,0 +1,127 @@
+import type { Metadata } from "next";
+import { Archivo_Black, Space_Mono, Inter } from "next/font/google";
+import "./globals.css";
+import { TRPCProvider } from "@/trpc/client";
+import { ThemeProvider } from "@/providers/ThemeProvider";
+import { Toaster } from "sonner";
+
+const archivoBlack = Archivo_Black({
+  weight: "400",
+  subsets: ["latin"],
+  variable: "--font-archivo",
+});
+
+const spaceMono = Space_Mono({
+  weight: ["400", "700"],
+  subsets: ["latin"],
+  variable: "--font-space-mono",
+});
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+});
+
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover",
+};
+
+export const metadata: Metadata = {
+  metadataBase: new URL("http://localhost:3000"),
+  title: {
+    default: "OverBranch — 100% Free & Open-Source Agentic LaTeX Code Editor",
+    template: "OverBranch | %s",
+  },
+  description: "Agentic Ai Latex code editor. Futuristic Ai Agent for Latex.",
+  keywords: [
+    "OverBranch",
+    "AI Platform",
+    "Open Source",
+    "Self-Hostable",
+    "AI Workflows",
+    "Developer Tools",
+    "AI Infrastructure",
+    "pdf to latex",
+    "Ai latex code editor",
+    "pdf to latex code generator",
+    "overleaf alternative",
+    "best pdf to latex",
+    "ai pdf to latex",
+    "free pdf to latex",
+    "Latex",
+    "Prism Ai",
+    "Prism Latex",
+    "Latex Ai",
+    "Latex agent",
+    "Overleaf better",
+    "latex editor agent",
+    "Better prism",
+  ],
+  authors: [{ name: "OverBranch Team" }],
+  alternates: {
+    canonical: "/",
+  },
+  openGraph: {
+    title: "OverBranch — 100% Free & Open-Source Agentic LaTeX Code Editor",
+    description: "Agentic AI LaTeX code editor. Futuristic AI Agent for LaTeX.",
+    url: "/",
+    siteName: "OverBranch",
+    locale: "en_US",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "OverBranch — Agentic LaTeX Code Editor",
+    description: "Agentic AI LaTeX code editor. Futuristic AI Agent for LaTeX.",
+  },
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/icon.png", type: "image/png" },
+    ],
+    apple: [
+      { url: "/apple-icon.png", sizes: "180x180", type: "image/png" },
+    ],
+  },
+  verification: {
+    google: undefined,
+  },
+};
+
+import { GoogleAnalytics } from "@/components/GoogleAnalytics";
+import { CookieConsentBanner } from "@/components/CookieConsentBanner";
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en" suppressHydrationWarning className="scroll-smooth">
+      <head>
+        <GoogleAnalytics />
+      </head>
+      <body
+        className={`${archivoBlack.variable} ${spaceMono.variable} ${inter.variable} font-sans antialiased min-h-screen bg-background text-foreground`}
+      >
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="dark"
+          enableSystem={true}
+          disableTransitionOnChange
+        >
+          <TRPCProvider>
+            {children}
+            <CookieConsentBanner />
+            <Toaster position="top-right" richColors />
+          </TRPCProvider>
+        </ThemeProvider>
+      </body>
+    </html>
+  );
+}
