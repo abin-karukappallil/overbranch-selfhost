@@ -191,6 +191,22 @@ def shutdown_all(signum=None, frame=None):
     sys.exit(0)
 
 
+def free_ports(ports=(3000, 8000, 8081)):
+    """Ensures ports are clear by terminating lingering processes from prior runs."""
+    import socket
+    for port in ports:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.3)
+                if s.connect_ex(('127.0.0.1', port)) == 0:
+                    if platform.system().lower() != "windows":
+                        subprocess.run(["fuser", "-k", f"{port}/tcp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    else:
+                        subprocess.run(f"for /f \"tokens=5\" %a in ('netstat -aon ^| find \":{port}\"') do taskkill /f /pid %a", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="OverBranch Self-Host Launcher")
@@ -206,6 +222,9 @@ def main():
     pulled_updates = False
     if not args.no_pull:
         pulled_updates = auto_update_git()
+
+    # Clear any stale lingering processes occupying ports 3000, 8000, 8081
+    free_ports((3000, 8000, 8081))
 
     # Ensure dependencies installed
     web2api_bin = get_web2api_binary()
@@ -288,11 +307,12 @@ Press {BOLD}Ctrl+C{RESET} at any time to stop all services.
     # Keep main thread alive and monitor processes
     try:
         while not is_shutting_down:
-            time.sleep(0.5)
-            # Check if any critical process died
+            time.sleep(1)
             for p in processes:
                 if p.poll() is not None and not is_shutting_down:
-                    log_error(f"Process {p.pid} exited with code {p.returncode}")
+                    log_error(f"A service process ({p.pid}) exited with code {p.returncode}. Shutting down services...")
+                    shutdown_all()
+                    break
     except KeyboardInterrupt:
         shutdown_all()
 
