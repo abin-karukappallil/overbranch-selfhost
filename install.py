@@ -220,6 +220,16 @@ def setup_frontend_dependencies():
     return True
 
 
+def build_frontend():
+    """Builds optimized production Next.js bundle for fast startup."""
+    log_info("Compiling production frontend bundle (next build)...")
+    bun_cmd = shutil.which("bun")
+    npm_cmd = shutil.which("npm")
+    cmd = [bun_cmd or npm_cmd, "run", "build"]
+    subprocess.run(cmd, cwd=str(ROOT_DIR), check=True)
+    log_success("Frontend compiled successfully.")
+
+
 def initialize_sqlite_database(python_bin: str):
     """Initializes local SQLite tables and seeds templates."""
     log_info("Initializing local SQLite database (overbranch.db)...")
@@ -245,8 +255,9 @@ def main():
     # 2. Setup Python environment
     python_bin = setup_python_environment()
 
-    # 3. Setup Frontend dependencies
+    # 3. Setup Frontend dependencies & compile production build
     setup_frontend_dependencies()
+    build_frontend()
 
     # 4. Initialize SQLite database
     initialize_sqlite_database(python_bin)

@@ -79,21 +79,39 @@ rem or: python install.py
 
 ---
 
-### 2. Run OverBranch
+---
 
-Launch the entire stack with a single command:
+### 2. Run OverBranch Anytime
 
-**Linux / macOS:**
+After installation, you can launch OverBranch anytime without re-cloning:
+
+#### ⚡ Option A: Universal Command (Fastest)
+From **any terminal window or directory**, simply type:
 ```bash
-./run.sh
-# or: python3 run.py
+overbranch
 ```
 
-**Windows:**
-```cmd
+#### ⚡ Option B: Single-Line Instant Launcher
+Run without changing directories:
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/start.sh | bash
+```
+
+#### ⚡ Option C: Direct Script
+```bash
+# Linux / macOS:
+cd overbranch-selfhost && ./run.sh
+# or: python3 run.py
+
+# Windows (Command Prompt / PowerShell):
+cd overbranch-selfhost
 run.bat
 rem or: python run.py
 ```
+
+> **🔄 Automatic Updates:**
+> Every time you start OverBranch, it automatically checks and pulls the latest updates from GitHub (`git pull origin main`). If updates are found, it recompiles the production frontend automatically so you are always running the latest version!
 
 Once running:
 - **Web Editor Workspace:** [http://localhost:3000](http://localhost:3000)

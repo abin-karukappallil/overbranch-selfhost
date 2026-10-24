@@ -4,6 +4,6 @@
   "retry_attempts": 3,
   "retry_delay_sec": 2,
   "request_timeout_sec": 180,
-  "default_model": "gemini-3.6-flash",
+  "default_model": "gemini-3.7-flash",
   "log_requests": false
 }

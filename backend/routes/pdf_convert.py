@@ -217,7 +217,7 @@ async def start_conversion(
     body = {"job_id": state["job_id"], "project_id": project["project_id"], "project_name": project.get("name"),
             "project_created": project["created"], "page_count": page_count}
     
-    return response
+    return JSONResponse(status_code=202, content=body)
 
 
 @router.get("/api/convert/pdf/{job_id}")

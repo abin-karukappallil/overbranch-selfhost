@@ -265,6 +265,23 @@ echo ""
 log_info "Starting core setup via Python installer..."
 "$PYTHON_BIN" install.py "$@"
 
+# Create global 'overbranch' launcher in ~/.local/bin or /usr/local/bin
+TARGET_BIN_DIR=""
+if [ -d "$HOME/.local/bin" ] || mkdir -p "$HOME/.local/bin" 2>/dev/null; then
+    TARGET_BIN_DIR="$HOME/.local/bin"
+elif [ -w "/usr/local/bin" ]; then
+    TARGET_BIN_DIR="/usr/local/bin"
+fi
+
+if [ -n "$TARGET_BIN_DIR" ]; then
+    cat << EOF > "${TARGET_BIN_DIR}/overbranch"
+#!/usr/bin/env bash
+cd "${WORK_DIR}" && exec ./run.sh "\$@"
+EOF
+    chmod +x "${TARGET_BIN_DIR}/overbranch"
+    log_ok "Installed global CLI command: ${BOLD}overbranch${RESET} (in ${TARGET_BIN_DIR})"
+fi
+
 # Post-install banner
 echo ""
 echo -e "${GREEN}${BOLD}============================================================${RESET}"
@@ -277,9 +294,11 @@ echo -e "  • TeX Engine API:  ${CYAN}http://localhost:8000${RESET}"
 echo -e "  • Gemini Proxy:    ${CYAN}http://localhost:8081${RESET}"
 echo -e "  • Database:        ${CYAN}overbranch.db (SQLite with Vector Search)${RESET}"
 echo ""
-echo -e "To start OverBranch anytime, run:"
-echo -e "  ${BOLD}cd ${WORK_DIR}${RESET}"
-echo -e "  ${BOLD}./run.sh${RESET}  (or: ${BOLD}${PYTHON_BIN} run.py${RESET})"
+echo -e "To start OverBranch anytime from anywhere, simply run:"
+echo -e "  ${BOLD}${GREEN}overbranch${RESET}"
+echo ""
+echo -e "Or from the folder directly:"
+echo -e "  ${BOLD}cd ${WORK_DIR} && ./run.sh${RESET}"
 echo ""
 
 # Interactive start prompt if a terminal is attached

@@ -107,6 +107,28 @@ Write-Green "Working directory: $WorkDir"
 Write-Cyan "Running core OverBranch installer (downloading Gemini Web2API, setting up venv, SQLite)..."
 & $pyCmd.Source install.py
 
+# 6. Create global 'overbranch' shortcut in User Path
+try {
+    $localBin = "$HOME\.local\bin"
+    if (-not (Test-Path $localBin)) {
+        New-Item -ItemType Directory -Path $localBin -Force | Out-Null
+    }
+    $shortcutFile = "$localBin\overbranch.cmd"
+    "@echo off
+cd /d `"$WorkDir`"
+call run.bat %*
+" | Out-File -FilePath $shortcutFile -Encoding ascii -Force
+
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($userPath -notlike "*$localBin*") {
+        [Environment]::SetEnvironmentVariable("Path", "$localBin;$userPath", "User")
+        $env:PATH = "$localBin;$env:PATH"
+    }
+    Write-Green "Installed global CLI command: overbranch"
+} catch {
+    # Non-critical, continue
+}
+
 Write-Host @"
 
 ============================================================
@@ -119,7 +141,10 @@ All services are self-contained with zero .env configuration:
   • Gemini Proxy:    http://localhost:8081
   • Database:        overbranch.db (SQLite with Vector Search)
 
-To start OverBranch anytime, run:
+To start OverBranch anytime from any terminal, simply run:
+  overbranch
+
+Or from this folder directly:
   cd $WorkDir
   python run.py  (or: .\run.bat)
 

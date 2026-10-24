@@ -33,7 +33,7 @@ from .openrouter_provider import OpenRouterProvider
 
 logger = logging.getLogger("provider_router")
 
-DEFAULT_MODEL = "gemini-3.6-flash"
+DEFAULT_MODEL = "gemini-3.7-flash"
 
 
 class TaskType(str, Enum):
@@ -48,13 +48,13 @@ class TaskType(str, Enum):
 
 # Task type to recommended model class mapping (All local Gemini in self-host)
 TASK_ROUTING_TABLE: Dict[TaskType, str] = {
-    TaskType.TASK_CLASSIFICATION: "gemini-3.6-flash",
-    TaskType.QUERY_REWRITING: "gemini-3.6-flash",
-    TaskType.FAST_PLAN: "gemini-3.6-flash",
-    TaskType.OUTLINE_PLAN: "gemini-3.6-flash",
-    TaskType.NODE_EDITING: "gemini-3.6-flash",
-    TaskType.DOC_RESTRUCTURING: "gemini-3.6-flash",
-    TaskType.VISION_DIFF: "gemini-3.6-flash",
+    TaskType.TASK_CLASSIFICATION: "gemini-3.7-flash",
+    TaskType.QUERY_REWRITING: "gemini-3.7-flash",
+    TaskType.FAST_PLAN: "gemini-3.7-flash",
+    TaskType.OUTLINE_PLAN: "gemini-3.7-flash",
+    TaskType.NODE_EDITING: "gemini-3.7-flash",
+    TaskType.DOC_RESTRUCTURING: "gemini-3.7-flash",
+    TaskType.VISION_DIFF: "gemini-3.7-flash",
 }
 
 
@@ -212,8 +212,8 @@ class ProviderRouter:
                 {
                     "name": "Gemini Web2API (Local)",
                     "models": gemini_models or [
-                        {"id": "gemini-3.6-flash", "label": "Gemini 3.6 Flash", "default": True},
-                        {"id": "gemini-3.7-flash", "label": "Gemini 3.7 Flash", "default": False},
+                        {"id": "gemini-3.7-flash", "label": "Gemini 3.7 Flash", "default": True},
+                        {"id": "gemini-3.6-flash", "label": "Gemini 3.6 Flash", "default": False},
                         {"id": "gemini-3.5-flash", "label": "Gemini 3.5 Flash", "default": False},
                         {"id": "gemini-3.5-flash-thinking", "label": "Gemini 3.5 Flash Thinking", "default": False},
                     ],

@@ -173,13 +173,13 @@ class GPT120BFileAnalysisProvider(BaseFileAnalysisProvider):
         4. GROQ_API_KEY_3 (Groq API 3 Fallback)
         5. NVIDIA_API_KEY (NVIDIA NIM API Fallback)
         """
-        default_model = model_override or "gemini-3.6-flash"
+        default_model = model_override or "gemini-3.7-flash"
         candidates = [
             {
                 "name": "Local Gemini Web2API",
                 "key": "local",
                 "url": "http://localhost:8081/v1/chat/completions",
-                "model": "gemini-3.6-flash",
+                "model": "gemini-3.7-flash",
             }
         ]
 

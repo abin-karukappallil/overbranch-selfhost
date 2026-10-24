@@ -68,20 +68,52 @@ def get_web2api_binary() -> Optional[Path]:
         if platform.system().lower() != "windows":
             p.chmod(0o755)
         return p
-    return None
+def auto_update_git() -> bool:
+    """Pulls latest updates from origin main before starting. Returns True if updates were pulled."""
+    if not (ROOT_DIR / ".git").exists() or not shutil.which("git"):
+        return False
+
+    log_runner("Checking for updates from GitHub (git pull origin main)...")
+    try:
+        proc = subprocess.run(
+            ["git", "pull", "origin", "main"],
+            cwd=str(ROOT_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=15,
+        )
+        output = proc.stdout.strip()
+        if proc.returncode == 0:
+            if "Already up to date" in output or "Already up-to-date" in output:
+                log_runner("OverBranch is up to date.")
+                return False
+            else:
+                log_runner(f"Pulled latest updates:\n{output}")
+                return True
+        else:
+            log_runner(f"Git auto-update notice: {output}")
+            return False
+    except subprocess.TimeoutExpired:
+        log_runner("Git auto-update timed out (offline or slow connection). Continuing start...")
+        return False
+    except Exception as e:
+        log_runner(f"Git auto-update skipped: {e}. Continuing start...")
+        return False
 
 
-def get_frontend_cmd() -> list[str]:
-    """Selects package manager command for Next.js frontend."""
+def get_frontend_cmd(dev_mode: bool = False) -> list[str]:
+    """Selects package manager command for Next.js frontend (compiled production by default)."""
+    subcmd = "dev" if dev_mode else "start"
     if shutil.which("bun"):
-        return ["bun", "run", "dev"]
+        return ["bun", "run", subcmd]
     elif shutil.which("npm"):
-        return ["npm", "run", "dev"]
+        return ["npm", "run", subcmd]
     elif shutil.which("pnpm"):
-        return ["pnpm", "dev"]
+        return ["pnpm", subcmd]
     elif shutil.which("yarn"):
-        return ["yarn", "dev"]
-    return ["npm", "run", "dev"]
+        return ["yarn", subcmd]
+    return ["npm", "run", subcmd]
 
 
 def stream_logs(pipe, prefix: str, color: str):
@@ -160,8 +192,20 @@ def shutdown_all(signum=None, frame=None):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="OverBranch Self-Host Launcher")
+    parser.add_argument("--dev", action="store_true", help="Run Next.js in development mode with HMR (slower)")
+    parser.add_argument("--build", action="store_true", help="Recompile Next.js production build before starting")
+    parser.add_argument("--no-pull", action="store_true", help="Skip automatic git pull on startup")
+    args, _ = parser.parse_known_args()
+
     signal.signal(signal.SIGINT, shutdown_all)
     signal.signal(signal.SIGTERM, shutdown_all)
+
+    # 0. Automatically pull latest updates from git on each start
+    pulled_updates = False
+    if not args.no_pull:
+        pulled_updates = auto_update_git()
 
     # Ensure dependencies installed
     web2api_bin = get_web2api_binary()
@@ -172,10 +216,12 @@ def main():
         subprocess.run([sys.executable, str(ROOT_DIR / "install.py")], check=True)
         web2api_bin = get_web2api_binary()
 
+    mode_label = "Development (next dev)" if args.dev else "Compiled Production (next start)"
     print(f"""{BOLD}{GREEN}
 ============================================================
               OverBranch Self-Host Launcher
    100% Local • Zero API Keys • SQLite • Gemini Web2API
+   Mode: {mode_label}
 ============================================================{RESET}
 """)
 
@@ -210,8 +256,16 @@ def main():
 
     time.sleep(1.5)
 
-    # 3. Start Next.js Frontend (Port 3000)
-    frontend_cmd = get_frontend_cmd()
+    # 3. Start Next.js Frontend (Port 3000, compiled version for maximum speed)
+    if not args.dev:
+        build_id_file = ROOT_DIR / ".next" / "BUILD_ID"
+        if args.build or pulled_updates or not build_id_file.exists():
+            log_runner("Compiling Next.js production build for maximum speed (next build)...")
+            build_pkg = "bun" if shutil.which("bun") else "npm"
+            subprocess.run([build_pkg, "run", "build"], cwd=str(ROOT_DIR), check=True)
+            log_runner("Production build compiled successfully.")
+
+    frontend_cmd = get_frontend_cmd(dev_mode=args.dev)
     start_service(
         name="Frontend",
         cmd=frontend_cmd,
