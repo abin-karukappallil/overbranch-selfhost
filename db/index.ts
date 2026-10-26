@@ -5,8 +5,10 @@ import path from 'path';
 
 function createDbClient() {
   const absPath = path.resolve(process.cwd(), 'overbranch.db');
+  // Normalize Windows backslashes to forward slashes for the file: URL
+  const normalizedPath = absPath.replace(/\\/g, '/');
   const client = createClient({
-    url: `file:${absPath}`,
+    url: `file:${normalizedPath}`,
   });
 
   return drizzle(client, { schema });

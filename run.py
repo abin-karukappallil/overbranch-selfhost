@@ -144,6 +144,15 @@ def start_service(name: str, cmd: list[str], cwd: Path, color: str) -> subproces
 
     if platform.system().lower() == "windows":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        # On Windows, commands like npm, pnpm, yarn are .cmd/.bat scripts requiring shell=True
+        first_bin = cmd[0] if cmd else ""
+        resolved = shutil.which(first_bin)
+        if resolved:
+            cmd = [resolved] + cmd[1:]
+            if resolved.lower().endswith((".cmd", ".bat")):
+                kwargs["shell"] = True
+        else:
+            kwargs["shell"] = True
     else:
         kwargs["preexec_fn"] = os.setsid
 
@@ -169,7 +178,8 @@ def shutdown_all(signum=None, frame=None):
         if p.poll() is None:
             try:
                 if platform.system().lower() == "windows":
-                    p.terminate()
+                    # Use taskkill /T /F to kill the full process tree (e.g. node.exe under npm.cmd)
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 else:
                     os.killpg(os.getpgid(p.pid), signal.SIGTERM)
             except Exception:
@@ -194,15 +204,27 @@ def shutdown_all(signum=None, frame=None):
 def free_ports(ports=(3000, 8000, 8081)):
     """Ensures ports are clear by terminating lingering processes from prior runs."""
     import socket
+    import re
+    is_win = platform.system().lower() == "windows"
     for port in ports:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(0.3)
-                if s.connect_ex(('127.0.0.1', port)) == 0:
-                    if platform.system().lower() != "windows":
-                        subprocess.run(["fuser", "-k", f"{port}/tcp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    else:
-                        subprocess.run(f"for /f \"tokens=5\" %a in ('netstat -aon ^| find \":{port}\"') do taskkill /f /pid %a", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if s.connect_ex(('127.0.0.1', port)) != 0:
+                    continue
+            # Port is actively occupied; terminate the process listening on it
+            if not is_win:
+                subprocess.run(["fuser", "-k", f"{port}/tcp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                out = subprocess.check_output("netstat -ano -p tcp", shell=True, text=True, stderr=subprocess.DEVNULL)
+                pids = set()
+                for line in out.splitlines():
+                    m = re.search(rf":{port}\s+.*?(?:LISTENING|ESTABLISHED)\s+(\d+)", line, re.I)
+                    if m:
+                        pids.add(m.group(1))
+                for pid in pids:
+                    if pid and pid != "0":
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
 
@@ -281,7 +303,7 @@ def main():
         if args.build or pulled_updates or not build_id_file.exists():
             log_runner("Compiling Next.js production build for maximum speed (next build)...")
             build_pkg = "bun" if shutil.which("bun") else "npm"
-            subprocess.run([build_pkg, "run", "build"], cwd=str(ROOT_DIR), check=True)
+            subprocess.run([build_pkg, "run", "build"], cwd=str(ROOT_DIR), check=True, shell=(platform.system().lower() == "windows"))
             log_runner("Production build compiled successfully.")
 
     frontend_cmd = get_frontend_cmd(dev_mode=args.dev)

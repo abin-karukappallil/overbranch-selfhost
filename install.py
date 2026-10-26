@@ -205,13 +205,14 @@ def setup_frontend_dependencies():
     log_info("Setting up frontend dependencies...")
     bun_cmd = shutil.which("bun")
     npm_cmd = shutil.which("npm")
+    is_win = platform.system().lower() == "windows"
 
     if bun_cmd:
         log_info("Using Bun package manager...")
-        subprocess.run([bun_cmd, "install"], cwd=str(ROOT_DIR), check=True)
+        subprocess.run([bun_cmd, "install"], cwd=str(ROOT_DIR), check=True, shell=is_win)
     elif npm_cmd:
         log_info("Using npm package manager...")
-        subprocess.run([npm_cmd, "install"], cwd=str(ROOT_DIR), check=True)
+        subprocess.run([npm_cmd, "install"], cwd=str(ROOT_DIR), check=True, shell=is_win)
     else:
         log_error("Neither bun nor npm was found. Please install Node.js (v18+) or Bun (v1+).")
         return False
@@ -225,8 +226,9 @@ def build_frontend():
     log_info("Compiling production frontend bundle (next build)...")
     bun_cmd = shutil.which("bun")
     npm_cmd = shutil.which("npm")
+    is_win = platform.system().lower() == "windows"
     cmd = [bun_cmd or npm_cmd, "run", "build"]
-    subprocess.run(cmd, cwd=str(ROOT_DIR), check=True)
+    subprocess.run(cmd, cwd=str(ROOT_DIR), check=True, shell=is_win)
     log_success("Frontend compiled successfully.")
 
 

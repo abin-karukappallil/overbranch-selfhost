@@ -34,7 +34,7 @@ def get_sqlite_path() -> Path:
 
 
 _SQLITE_PATH = get_sqlite_path()
-_ASYNC_DB_URL = f"sqlite+aiosqlite:///{_SQLITE_PATH}"
+_ASYNC_DB_URL = f"sqlite+aiosqlite:///{_SQLITE_PATH.as_posix()}"
 
 _async_engine: Optional[AsyncEngine] = None
 _async_session_factory: Optional[async_sessionmaker[AsyncSession]] = None

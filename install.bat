@@ -5,11 +5,17 @@ echo ============================================================
 echo        OverBranch Self-Host Installer for Windows
 echo ============================================================
 
+set "PY_CMD=python"
 where python >nul 2>nul
 if %ERRORLEVEL% neq 0 (
-    echo [ERROR] Python is required. Download from https://www.python.org/downloads/
-    pause
-    exit /b 1
+    where py >nul 2>nul
+    if %ERRORLEVEL% equ 0 (
+        set "PY_CMD=py -3"
+    ) else (
+        echo [ERROR] Python is required. Download from https://www.python.org/downloads/
+        pause
+        exit /b 1
+    )
 )
 
 where git >nul 2>nul
@@ -31,4 +37,4 @@ if not exist "install.py" (
     )
 )
 
-python install.py %*
+%PY_CMD% install.py %*

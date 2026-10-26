@@ -4,12 +4,13 @@ import time
 import shutil
 import subprocess
 import logging
+import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger("synctex_service")
 
-SYNCTEX_CACHE_DIR = Path("/tmp/overbranch_synctex_cache")
+SYNCTEX_CACHE_DIR = Path(tempfile.gettempdir()) / "overbranch_synctex_cache"
 SYNCTEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # In-memory LRU cache for forward and backward lookup results
@@ -29,6 +30,7 @@ def normalize_tex_file_path(raw_path: str, build_dir: Path) -> str:
     """
     Clean up file path from synctex output to be relative to project root.
     e.g. '/tmp/tmp1234/./sections/method.tex' -> 'sections/method.tex'
+         'C:\\Users\\...\\AppData\\Local\\Temp\\tmp1234\\main.tex' -> 'main.tex'
          '/tmp/overbranch_synctex_cache/proj_1/./sections/method.tex' -> 'sections/method.tex'
     """
     cleaned = raw_path.strip()
@@ -37,10 +39,10 @@ def normalize_tex_file_path(raw_path: str, build_dir: Path) -> str:
     if cleaned.startswith(build_dir_str):
         cleaned = cleaned[len(build_dir_str):].lstrip("/\\")
 
-    # Strip any generic /tmp/tmp.../ temporary compilation directory prefix
-    cleaned = re.sub(r"^/tmp/[^/]+/", "", cleaned)
+    # Strip any generic temporary compilation directory prefix (/tmp/tmp... or Temp\tmp...)
+    cleaned = re.sub(r"^(?:/tmp/|.*[/\\](?:Temp|tmp)[/\\])[^/\\]+[/\\]", "", cleaned, flags=re.I)
 
-    # Strip any leading ./ or .\ or /
+    # Strip any leading ./ or .\ or / or \
     cleaned = re.sub(r"^(\./|/|\\)+", "", cleaned)
 
     return cleaned or "main.tex"

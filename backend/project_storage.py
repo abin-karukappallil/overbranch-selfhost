@@ -35,7 +35,12 @@ def verify_project_access(supabase: Client, project_id: str, user_id: Optional[s
 def get_project_disk_path(project_id: str, file_path: str) -> Path:
     safe_project = re.sub(r'[^a-zA-Z0-9_-]', '_', project_id)
     target_path = (UPLOADS_BASE_DIR / safe_project / file_path).resolve()
-    if not str(target_path).startswith(str(UPLOADS_BASE_DIR)):
+    base_dir = UPLOADS_BASE_DIR.resolve()
+    try:
+        is_safe = target_path.is_relative_to(base_dir)
+    except (ValueError, AttributeError):
+        is_safe = str(target_path).lower().startswith(str(base_dir).lower())
+    if not is_safe:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid file path (path traversal detected)."

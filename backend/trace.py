@@ -17,12 +17,13 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("trace")
-TRACE_DIR = Path("/tmp/overbranch_traces")
+TRACE_DIR = Path(tempfile.gettempdir()) / "overbranch_traces"
 
 
 def redact_args(args: Dict[str, Any], limit: int = 80) -> Dict[str, Any]:

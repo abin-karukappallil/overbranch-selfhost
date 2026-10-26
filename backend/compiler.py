@@ -86,7 +86,12 @@ _TEX_LOG_ENV = {"max_print_line": "10000", "error_line": "254", "half_error_line
 
 
 def _engine_command(engine_bin: str, *extra: str) -> List[str]:
-    return [engine_bin, *extra, "-interaction=nonstopmode", "-file-line-error", "-jobname=main", _TEX_ENTRY]
+    # On Windows, arguments with spaces like "\errorcontextlines=20 \input{main.tex}"
+    # are quoted by subprocess (list2cmdline). MiKTeX treats quoted arguments as
+    # filenames and errors with "! I can't find file '\"\\errorcontextlines...'".
+    # Passing "main.tex" directly avoids quoting issues on Windows.
+    entry = "main.tex" if sys.platform == "win32" else _TEX_ENTRY
+    return [engine_bin, *extra, "-interaction=nonstopmode", "-file-line-error", "-jobname=main", entry]
 
 
 def _attach_diagnostics(result: dict, output: str, tmpdir: Path) -> None:
@@ -500,10 +505,21 @@ def augment_path_for_latex():
             r"C:\Program Files (x86)\MiKTeX\miktex\bin\x64",
             r"C:\Program Files\MiKTeX\miktex\bin",
             os.path.join(home, r"AppData\Local\Programs\MiKTeX\miktex\bin\x64"),
+            os.path.join(home, r"AppData\Local\Programs\MiKTeX\miktex\bin"),
+            os.path.join(home, r"AppData\Roaming\TinyTeX\bin\windows"),
+            os.path.join(home, r"AppData\Roaming\TinyTeX\bin\win32"),
+            os.path.join(home, r".local\bin"),
+            os.path.join(home, r"bin"),
             r"C:\texlive\2026\bin\windows",
+            r"C:\texlive\2026\bin\win32",
             r"C:\texlive\2025\bin\windows",
+            r"C:\texlive\2025\bin\win32",
             r"C:\texlive\2024\bin\windows",
+            r"C:\texlive\2024\bin\win32",
             r"C:\texlive\2023\bin\windows",
+            r"C:\texlive\2023\bin\win32",
+            r"C:\Strawberry\c\bin",
+            r"C:\Strawberry\perl\bin",
         ]
 
         current_path = os.environ.get("PATH", "")
@@ -1542,13 +1558,22 @@ def _compile_latex_impl(
             for _stub in _generate_stub_bibs(tmpdir, project_text):
                 bib_notes.append(f"{_stub} was not found; generated a placeholder from the document's citation keys.")
             _compile_copy = _inject_hyperref(latex_code, project_text, tmpdir)
+            if sys.platform == "win32" and "\\errorcontextlines" not in _compile_copy:
+                # On Windows, command-line TeX args with spaces get quoted and break MiKTeX.
+                # Inject \errorcontextlines at the start of main.tex instead.
+                _compile_copy = "\\errorcontextlines=20\\relax\n" + _compile_copy
+
             if _compile_copy != latex_code:
                 tex_path.write_text(_compile_copy, encoding="utf-8")
 
             # Environment configuration
             comp_env = os.environ.copy()
             existing_texinputs = comp_env.get("TEXINPUTS", "")
-            comp_env["TEXINPUTS"] = f".:{tmpdir}//:{tmpdir}:{tmpdir}/images:{existing_texinputs}"
+            if sys.platform == "win32":
+                p_tmp = tmpdir.as_posix()
+                comp_env["TEXINPUTS"] = f".;{p_tmp}//;{p_tmp};{p_tmp}/images;{existing_texinputs}"
+            else:
+                comp_env["TEXINPUTS"] = f".:{tmpdir}//:{tmpdir}:{tmpdir}/images:{existing_texinputs}"
             for _key, _value in _TEX_LOG_ENV.items():
                 comp_env.setdefault(_key, _value)
 
@@ -1652,6 +1677,14 @@ def _compile_latex_impl(
                     )
                     last_output = (result.stdout or "") + "\n" + (result.stderr or "")
                     final_pass = last_output
+                except FileNotFoundError:
+                    if not last_output:
+                        install_hint = (
+                            "Please install MiKTeX (https://miktex.org/download) or run 'winget install MiKTeX.MiKTeX' on Windows, "
+                            "or 'apt install texlive-latex-base' on Linux."
+                        )
+                        last_output = f"[INFRASTRUCTURE ERROR] LaTeX compiler executable '{cmd[0]}' not found in system PATH. {install_hint}"
+                    continue
 
                     pdf_path = tmpdir / "main.pdf"
 
@@ -1854,7 +1887,12 @@ def _compile_latex_impl(
                     if r"\usepackage[T1]{fontenc}" in patched_code:
                         patched_code = patched_code.replace(r"\usepackage[T1]{fontenc}", r"\usepackage[T1]{fontenc}" + "\n" + r"\usepackage{lmodern}")
                     elif r"\documentclass" in patched_code:
-                        patched_code = re.sub(r'(\\documentclass(?:\[.*?\])?\{.*?\})', r'\1' + "\n" + r"\usepackage{lmodern}", patched_code, count=1)
+                        patched_code = re.sub(
+                            r'(\\documentclass(?:\[.*?\])?\{.*?\})',
+                            lambda m: m.group(1) + "\n" + r"\usepackage{lmodern}",
+                            patched_code,
+                            count=1,
+                        )
 
                 if patched_code != latex_code:
                     tex_path.write_text(patched_code, encoding="utf-8")

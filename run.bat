@@ -6,7 +6,12 @@ where python >nul 2>nul
 if %ERRORLEVEL% equ 0 (
     python run.py %*
 ) else (
-    echo Error: Python is required to run OverBranch Self-Host.
-    pause
-    exit /b 1
+    where py >nul 2>nul
+    if %ERRORLEVEL% equ 0 (
+        py -3 run.py %*
+    ) else (
+        echo Error: Python is required to run OverBranch Self-Host.
+        pause
+        exit /b 1
+    )
 )
