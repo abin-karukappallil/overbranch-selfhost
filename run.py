@@ -257,6 +257,15 @@ def main():
         subprocess.run([sys.executable, str(ROOT_DIR / "install.py")], check=True)
         web2api_bin = get_web2api_binary()
 
+    # Ensure LaTeX compiler is installed and available on Windows
+    if platform.system().lower() == "windows":
+        if not shutil.which("pdflatex") and not shutil.which("latexmk"):
+            try:
+                from install import check_or_install_latex
+                check_or_install_latex()
+            except Exception as e:
+                log_runner(f"Notice: LaTeX setup notice: {e}")
+
     mode_label = "Development (next dev)" if args.dev else "Compiled Production (next start)"
     print(f"""{BOLD}{GREEN}
 ============================================================

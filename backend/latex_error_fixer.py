@@ -134,6 +134,8 @@ def _classify_tex_error(msg: str) -> Tuple[str, str]:
         return "PACKAGE_ERROR", "Check package requirements, options, or conflicting definitions."
     if "something's wrong" in low or "missing \\item" in low or "lonely \\item" in low:
         return "LONELY_ITEM", "Ensure all \\item commands are enclosed inside \\begin{itemize} or \\begin{enumerate}."
+    if "infrastructure error" in low or "[infrastructure error]" in low:
+        return "INFRASTRUCTURE_ERROR", "LaTeX compiler is not installed or available on PATH."
     if "emergency stop" in low:
         return "COMPILER_ERROR", "Fatal compilation stop; check previous error lines."
     return "GENERAL_LATEX_ERROR", ""

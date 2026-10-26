@@ -244,6 +244,183 @@ def initialize_sqlite_database(python_bin: str):
     log_success("Local SQLite database initialized.")
 
 
+def check_or_install_latex():
+    """Checks for LaTeX engine (pdflatex/latexmk) and installs MiKTeX automatically on Windows if missing."""
+    log_info("Checking for LaTeX engine (pdflatex / latexmk)...")
+
+    # 1. First check if pdflatex or latexmk is already available
+    compiler_bin = shutil.which("pdflatex") or shutil.which("latexmk")
+    if compiler_bin:
+        log_success(f"Found LaTeX compiler: {compiler_bin}")
+        return True
+
+    # 2. On Windows, check common MiKTeX and TeX Live paths before attempting installation
+    system = platform.system().lower()
+    if system == "windows":
+        home = os.path.expanduser("~")
+        local_app_data = os.getenv("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+        prog_files = os.getenv("ProgramFiles") or r"C:\Program Files"
+        prog_files_x86 = os.getenv("ProgramFiles(x86)") or r"C:\Program Files (x86)"
+
+        candidate_dirs = [
+            os.path.join(local_app_data, r"Programs\MiKTeX\miktex\bin\x64"),
+            os.path.join(local_app_data, r"Programs\MiKTeX\miktex\bin"),
+            os.path.join(prog_files, r"MiKTeX\miktex\bin\x64"),
+            os.path.join(prog_files_x86, r"MiKTeX\miktex\bin\x64"),
+            os.path.join(prog_files, r"MiKTeX\miktex\bin"),
+            r"C:\texlive\2026\bin\windows",
+            r"C:\texlive\2025\bin\windows",
+            r"C:\texlive\2024\bin\windows",
+            r"C:\texlive\2023\bin\windows",
+        ]
+
+        # Check Windows registry for custom installation
+        try:
+            import winreg
+            for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                for subkey in (
+                    r"Software\MiKTeX.org\MiKTeX\CurrentVersion\Setup",
+                    r"Software\MiKTeX.org\MiKTeX\CurrentVersion\Core",
+                ):
+                    try:
+                        with winreg.OpenKey(root, subkey) as key:
+                            val, _ = winreg.QueryValueEx(key, "Install")
+                            if val:
+                                for sub in (os.path.join(val, "miktex", "bin", "x64"), os.path.join(val, "miktex", "bin")):
+                                    if sub not in candidate_dirs:
+                                        candidate_dirs.insert(0, sub)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        for c_dir in candidate_dirs:
+            if os.path.isfile(os.path.join(c_dir, "pdflatex.exe")):
+                os.environ["PATH"] = f"{c_dir}{os.path.pathsep}{os.environ.get('PATH', '')}"
+                log_success(f"Found MiKTeX compiler at: {c_dir}")
+                return True
+
+        # Not found on Windows: trigger automated MiKTeX installation
+        log_warn("LaTeX compiler (pdflatex / MiKTeX) not detected on Windows.")
+        log_info("Installing MiKTeX automatically (enables offline LaTeX compilation & Beamer presentations)...")
+
+        installed = False
+
+        # Attempt A: winget
+        winget_bin = shutil.which("winget")
+        if winget_bin:
+            log_info("Installing MiKTeX via Windows Package Manager (winget)...")
+            try:
+                winget_cmd = [
+                    winget_bin, "install",
+                    "--id", "MiKTeX.MiKTeX",
+                    "-e",
+                    "--source", "winget",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                    "--silent",
+                    "--scope", "user",
+                    "--custom", "--unattended --private"
+                ]
+                proc = subprocess.run(winget_cmd, timeout=400)
+                if proc.returncode == 0:
+                    installed = True
+            except Exception as e:
+                log_warn(f"winget installation encountered an issue: {e}")
+
+        # Attempt B: Direct standalone setup utility download (miktexsetup_standalone.exe)
+        if not installed:
+            import tempfile
+            temp_dir = Path(tempfile.gettempdir())
+            zip_dest = temp_dir / "miktexsetup-x64.zip"
+            setup_dir = temp_dir / "miktexsetup_unpacked"
+            setup_url = "https://miktex.org/download/win/miktexsetup-x64.zip"
+
+            log_info(f"Downloading official MiKTeX setup utility from {setup_url}...")
+            try:
+                req = urllib.request.Request(
+                    setup_url,
+                    headers={"User-Agent": "Mozilla/5.0 OverBranch-SelfHost-Installer"}
+                )
+                with urllib.request.urlopen(req, timeout=120) as resp, open(zip_dest, "wb") as out:
+                    shutil.copyfileobj(resp, out)
+
+                shutil.rmtree(setup_dir, ignore_errors=True)
+                with zipfile.ZipFile(zip_dest, "r") as zf:
+                    zf.extractall(setup_dir)
+
+                # Locate miktexsetup_standalone.exe or miktexsetup.exe
+                setup_exe = next(setup_dir.glob("*miktexsetup*.exe"), None)
+                if setup_exe and setup_exe.is_file():
+                    log_info("Running silent MiKTeX unattended installation (this may take 2-4 minutes)...")
+                    subprocess.run(
+                        [str(setup_exe), "--quiet", "--package-set=basic", "install"],
+                        check=True,
+                        timeout=480
+                    )
+                    installed = True
+            except Exception as zip_err:
+                log_warn(f"Standalone MiKTeX setup failed: {zip_err}")
+                # Fallback to basic-miktex-x64.exe installer
+                log_info("Attempting basic-miktex-x64.exe fallback...")
+                basic_dest = temp_dir / "basic-miktex-installer.exe"
+                try:
+                    req = urllib.request.Request(
+                        "https://miktex.org/download/win/basic-miktex-x64.exe",
+                        headers={"User-Agent": "Mozilla/5.0 OverBranch-SelfHost-Installer"}
+                    )
+                    with urllib.request.urlopen(req, timeout=120) as resp, open(basic_dest, "wb") as out:
+                        shutil.copyfileobj(resp, out)
+                    subprocess.run(
+                        [str(basic_dest), "--unattended", "--auto-install=yes"],
+                        check=True,
+                        timeout=480
+                    )
+                    installed = True
+                except Exception as dl_err:
+                    log_warn(f"Direct MiKTeX installation fallback failed: {dl_err}")
+                finally:
+                    basic_dest.unlink(missing_ok=True)
+            finally:
+                zip_dest.unlink(missing_ok=True)
+                shutil.rmtree(setup_dir, ignore_errors=True)
+
+        # After installation, locate the newly installed binary and add to PATH
+        for c_dir in candidate_dirs:
+            if os.path.isfile(os.path.join(c_dir, "pdflatex.exe")):
+                os.environ["PATH"] = f"{c_dir}{os.path.pathsep}{os.environ.get('PATH', '')}"
+
+                # Persist to Windows User PATH environment
+                try:
+                    subprocess.run(
+                        ["powershell", "-NoProfile", "-Command",
+                         f"$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($p -notlike '*{c_dir}*') {{ [Environment]::SetEnvironmentVariable('Path', '{c_dir};' + $p, 'User') }}"],
+                        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                except Exception:
+                    pass
+
+                # Configure auto-install of missing packages on-the-fly without prompts
+                initexmf_bin = os.path.join(c_dir, "initexmf.exe")
+                if os.path.isfile(initexmf_bin):
+                    subprocess.run([initexmf_bin, "--set-config-value=[MPM]AutoInstall=1"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                log_success(f"MiKTeX installed and configured successfully at: {c_dir}")
+                return True
+
+        log_warn("MiKTeX installer finished but pdflatex was not found immediately.")
+        log_info("You can also install manually from: https://miktex.org/download")
+        return False
+    else:
+        # Non-Windows systems: log advice
+        log_warn("LaTeX engine (pdflatex / latexmk) not found on PATH.")
+        log_info("Install TeX Live for your system:")
+        log_info("  • Ubuntu/Debian: sudo apt install -y texlive-latex-base texlive-latex-extra latexmk")
+        log_info("  • Arch Linux:    sudo pacman -S --noconfirm texlive-basic texlive-latexextra")
+        log_info("  • macOS:         brew install --cask mactex-no-gui")
+        return False
+
+
 def main():
     print(f"""{BOLD}{GREEN}
 ============================================================
@@ -263,6 +440,9 @@ def main():
 
     # 4. Initialize SQLite database
     initialize_sqlite_database(python_bin)
+
+    # 5. Check and install LaTeX compiler (MiKTeX on Windows)
+    check_or_install_latex()
 
     print(f"""
 {BOLD}{GREEN}============================================================

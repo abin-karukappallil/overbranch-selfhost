@@ -26,6 +26,13 @@ _cleanup_task: Optional[asyncio.Task] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting OverBranch Self-Host TeX Engine API...")
+    # Augment system PATH with MiKTeX / TeX Live binaries
+    try:
+        from compiler import augment_path_for_latex
+        augment_path_for_latex()
+    except Exception as e:
+        logger.warning(f"Could not augment system PATH for LaTeX: {e}")
+
     # Initialize SQLite database schema
     try:
         from database import init_sqlite_schema

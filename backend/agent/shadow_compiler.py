@@ -361,9 +361,16 @@ def _run_compile(workspace: "ShadowWorkspace", code: str, engine: str, timeout_s
             pdf_bytes = None
 
     low_log = (log_text or "").lower()
+    has_infra_marker = (
+        bool(result.get("infra_error"))
+        or any(m in low_log for m in INFRA_MARKERS)
+        or any("[infrastructure error]" in str(e.get("error", "")).lower() or e.get("type") == "INFRASTRUCTURE_ERROR" for e in errors)
+    )
     is_infra_error = bool(str(result.get("log", "")).startswith("Rendered via Fast TeX Engine")) or (
-        not result.get("success") and not errors
-        and (any(m in low_log for m in INFRA_MARKERS) or low_log.strip() in _FAILURE_PLACEHOLDERS)
+        not result.get("success") and (
+            has_infra_marker
+            or (not errors and low_log.strip() in _FAILURE_PLACEHOLDERS)
+        )
     )
     if not result.get("success") and not errors and not is_infra_error:
         # TeX ran and failed but nothing parseable came out (timeout, unparsed fatal
@@ -376,7 +383,7 @@ def _run_compile(workspace: "ShadowWorkspace", code: str, engine: str, timeout_s
     return {
         "result": result,
         "log": log_text,
-        "errors": errors,
+        "errors": [] if is_infra_error else errors,
         "summary": diagnostics.get("summary", "") or "\n".join(e["error"] for e in errors[:5]),
         "pdf": pdf_bytes,
         "overfull": result.get("overfull") or [],

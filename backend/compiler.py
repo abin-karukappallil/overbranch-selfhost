@@ -500,14 +500,19 @@ def augment_path_for_latex():
     """Augments system PATH with common MiKTeX and TeX Live installation locations on Windows."""
     if sys.platform == "win32":
         home = os.path.expanduser("~")
+        local_app_data = os.getenv("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+        app_data = os.getenv("APPDATA") or os.path.join(home, "AppData", "Roaming")
+        prog_files = os.getenv("ProgramFiles") or r"C:\Program Files"
+        prog_files_x86 = os.getenv("ProgramFiles(x86)") or r"C:\Program Files (x86)"
+
         common_win_paths = [
-            r"C:\Program Files\MiKTeX\miktex\bin\x64",
-            r"C:\Program Files (x86)\MiKTeX\miktex\bin\x64",
-            r"C:\Program Files\MiKTeX\miktex\bin",
-            os.path.join(home, r"AppData\Local\Programs\MiKTeX\miktex\bin\x64"),
-            os.path.join(home, r"AppData\Local\Programs\MiKTeX\miktex\bin"),
-            os.path.join(home, r"AppData\Roaming\TinyTeX\bin\windows"),
-            os.path.join(home, r"AppData\Roaming\TinyTeX\bin\win32"),
+            os.path.join(local_app_data, r"Programs\MiKTeX\miktex\bin\x64"),
+            os.path.join(local_app_data, r"Programs\MiKTeX\miktex\bin"),
+            os.path.join(prog_files, r"MiKTeX\miktex\bin\x64"),
+            os.path.join(prog_files_x86, r"MiKTeX\miktex\bin\x64"),
+            os.path.join(prog_files, r"MiKTeX\miktex\bin"),
+            os.path.join(app_data, r"TinyTeX\bin\windows"),
+            os.path.join(app_data, r"TinyTeX\bin\win32"),
             os.path.join(home, r".local\bin"),
             os.path.join(home, r"bin"),
             r"C:\texlive\2026\bin\windows",
@@ -521,6 +526,44 @@ def augment_path_for_latex():
             r"C:\Strawberry\c\bin",
             r"C:\Strawberry\perl\bin",
         ]
+
+        # Check Windows registry for MiKTeX custom installation location
+        try:
+            import winreg
+            for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                for subkey in (
+                    r"Software\MiKTeX.org\MiKTeX\CurrentVersion\Setup",
+                    r"Software\MiKTeX.org\MiKTeX\CurrentVersion\Core",
+                ):
+                    try:
+                        with winreg.OpenKey(root, subkey) as key:
+                            val, _ = winreg.QueryValueEx(key, "Install")
+                            if val:
+                                for sub in (os.path.join(val, "miktex", "bin", "x64"), os.path.join(val, "miktex", "bin")):
+                                    if os.path.exists(sub) and sub not in common_win_paths:
+                                        common_win_paths.insert(0, sub)
+                    except Exception:
+                        pass
+
+            # Also check user and system Path registry keys for on-the-fly detection
+            for root, subkey in (
+                (winreg.HKEY_CURRENT_USER, r"Environment"),
+                (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+            ):
+                try:
+                    with winreg.OpenKey(root, subkey) as key:
+                        val, _ = winreg.QueryValueEx(key, "Path")
+                        if val:
+                            for part in val.split(";"):
+                                part_strip = part.strip()
+                                if part_strip and os.path.exists(part_strip) and part_strip not in common_win_paths:
+                                    low = part_strip.lower()
+                                    if "miktex" in low or "texlive" in low or "tinytex" in low:
+                                        common_win_paths.insert(0, part_strip)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         current_path = os.environ.get("PATH", "")
         found_paths = [p for p in common_win_paths if os.path.exists(p)]
@@ -1317,7 +1360,14 @@ def _compile_failure(output: str) -> dict:
                     break
     picked = list(dict.fromkeys(picked))
     summary = "\n".join(picked[:20]) if picked else clean_err[-1500:]
-    return {"success": False, "error_log": summary, "raw_log": clean_err[-32000:], "errors": tex_errors(clean_err)}
+    is_infra = any(s.startswith("[INFRASTRUCTURE ERROR]") for s in picked) or "[INFRASTRUCTURE ERROR]" in clean_err
+    return {
+        "success": False,
+        "error_log": summary,
+        "raw_log": clean_err[-32000:],
+        "errors": tex_errors(clean_err),
+        "infra_error": is_infra,
+    }
 
 
 _RE_LOG_LINE_REFS = (

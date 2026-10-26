@@ -77,7 +77,125 @@ if ($bunCmd) {
     }
 }
 
-# 4. Determine or clone repository
+# 4. Check & Install LaTeX Compiler (MiKTeX)
+Write-Cyan "Checking LaTeX compiler (pdflatex / MiKTeX)..."
+$latexCmd = Get-Command pdflatex -ErrorAction SilentlyContinue
+if (-not $latexCmd) {
+    $latexCmd = Get-Command latexmk -ErrorAction SilentlyContinue
+}
+
+$candidateMiktexDirs = @(
+    "$env:LOCALAPPDATA\Programs\MiKTeX\miktex\bin\x64",
+    "$env:LOCALAPPDATA\Programs\MiKTeX\miktex\bin",
+    "$env:ProgramFiles\MiKTeX\miktex\bin\x64",
+    "${env:ProgramFiles(x86)}\MiKTeX\miktex\bin\x64",
+    "C:\Program Files\MiKTeX\miktex\bin\x64",
+    "C:\texlive\2026\bin\windows",
+    "C:\texlive\2025\bin\windows",
+    "C:\texlive\2024\bin\windows"
+)
+
+# Registry lookup
+try {
+    $regPaths = @(
+        "HKCU:\Software\MiKTeX.org\MiKTeX\CurrentVersion\Setup",
+        "HKLM:\Software\MiKTeX.org\MiKTeX\CurrentVersion\Setup"
+    )
+    foreach ($rp in $regPaths) {
+        if (Test-Path $rp) {
+            $inst = (Get-ItemProperty -Path $rp -Name "Install" -ErrorAction SilentlyContinue).Install
+            if ($inst) {
+                $candidateMiktexDirs = @("$inst\miktex\bin\x64", "$inst\miktex\bin") + $candidateMiktexDirs
+            }
+        }
+    }
+} catch {}
+
+if (-not $latexCmd) {
+    foreach ($dir in $candidateMiktexDirs) {
+        if (Test-Path "$dir\pdflatex.exe") {
+            $env:PATH = "$dir;$env:PATH"
+            $latexCmd = Get-Command pdflatex -ErrorAction SilentlyContinue
+            break
+        }
+    }
+}
+
+if ($latexCmd) {
+    Write-Green "Found LaTeX compiler: $($latexCmd.Source)"
+} else {
+    Write-Yellow "LaTeX compiler (pdflatex / MiKTeX) not detected."
+    Write-Cyan "Installing MiKTeX automatically (enables offline LaTeX compilation and Beamer decks)..."
+
+    $installed = $false
+    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+    if ($wingetCmd) {
+        Write-Cyan "Installing MiKTeX via Windows Package Manager (winget)..."
+        try {
+            & winget install --id MiKTeX.MiKTeX -e --source winget --accept-package-agreements --accept-source-agreements --silent --scope user --custom "--unattended --private"
+            $installed = $true
+        } catch {
+            Write-Yellow "winget install encountered an issue: $_"
+        }
+    }
+
+    if (-not $installed) {
+        $zipUrl = "https://miktex.org/download/win/miktexsetup-x64.zip"
+        $tempZip = "$env:TEMP\miktexsetup-x64.zip"
+        $tempDir = "$env:TEMP\miktexsetup"
+        Write-Cyan "Downloading official MiKTeX setup utility from $zipUrl..."
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $zipUrl -OutFile $tempZip -UseBasicParsing
+            if (Test-Path $tempDir) { Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
+            Expand-Archive -Path $tempZip -DestinationPath $tempDir -Force
+            $setupExe = Get-ChildItem -Path $tempDir -Filter "*miktexsetup*.exe" -Recurse | Select-Object -First 1
+            if ($setupExe) {
+                Write-Cyan "Running silent MiKTeX unattended setup (this may take 2-4 minutes)..."
+                Start-Process -FilePath $setupExe.FullName -ArgumentList "--quiet", "--package-set=basic", "install" -Wait
+                $installed = $true
+            }
+            Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Yellow "Direct MiKTeX setup failed: $_"
+            # Fallback to basic-miktex-x64.exe
+            $miktexUrl = "https://miktex.org/download/win/basic-miktex-x64.exe"
+            $installerPath = "$env:TEMP\basic-miktex-installer.exe"
+            try {
+                Invoke-WebRequest -Uri $miktexUrl -OutFile $installerPath -UseBasicParsing
+                Start-Process -FilePath $installerPath -ArgumentList "--unattended", "--auto-install=yes" -Wait
+                Remove-Item -Path $installerPath -Force -ErrorAction SilentlyContinue
+                $installed = $true
+            } catch {
+                Write-Yellow "Fallback MiKTeX download failed: $_"
+            }
+        }
+    }
+
+    # Re-scan paths and configure
+    foreach ($dir in $candidateMiktexDirs) {
+        if (Test-Path "$dir\pdflatex.exe") {
+            $env:PATH = "$dir;$env:PATH"
+            try {
+                $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+                if ($userPath -notlike "*$dir*") {
+                    [Environment]::SetEnvironmentVariable("Path", "$dir;$userPath", "User")
+                }
+            } catch {}
+
+            # Configure auto-install of missing packages on-the-fly
+            if (Test-Path "$dir\initexmf.exe") {
+                & "$dir\initexmf.exe" --set-config-value=[MPM]AutoInstall=1 *>$null
+            }
+            Write-Green "MiKTeX successfully installed and configured at: $dir"
+            $latexCmd = Get-Command pdflatex -ErrorAction SilentlyContinue
+            break
+        }
+    }
+}
+
+# 5. Determine or clone repository
 $RepoUrl = if ($env:OVERBRANCH_REPO_URL) { $env:OVERBRANCH_REPO_URL } else { "https://github.com/abin-karukappallil/overbranch-selfhost.git" }
 $TargetFolder = if ($env:OVERBRANCH_INSTALL_DIR) { $env:OVERBRANCH_INSTALL_DIR } else { "overbranch-selfhost" }
 
@@ -103,11 +221,11 @@ if ((Test-Path ".\install.py") -and (Test-Path ".\backend") -and (Test-Path ".\p
 
 Write-Green "Working directory: $WorkDir"
 
-# 5. Run Python installer
-Write-Cyan "Running core OverBranch installer (downloading Gemini Web2API, setting up venv, SQLite)..."
+# 6. Run Python installer
+Write-Cyan "Running core OverBranch installer (downloading Gemini Web2API, setting up venv, SQLite, MiKTeX)..."
 & $pyCmd.Source install.py
 
-# 6. Create global 'overbranch' shortcut in User Path
+# 7. Create global 'overbranch' shortcut in User Path
 try {
     $localBin = "$HOME\.local\bin"
     if (-not (Test-Path $localBin)) {
