@@ -51,7 +51,12 @@ irm https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/mai
 3. **Sets Up Python Backend**: Creates `.venv`, installs requirements, and configures the local vector search engine.
 4. **Installs Frontend**: Automatically installs all Next.js dependencies with Bun or npm.
 5. **Initializes SQLite**: Creates `overbranch.db` with all tables, vector embeddings, and LaTeX templates.
-6. **Configures LaTeX Compiler**: On Windows, automatically installs and configures **MiKTeX** (via winget or silent installer) with on-the-fly package installation for complete offline compilation and Beamer presentations.
+6. **Installs & Configures the LaTeX Compiler**: Detects `pdflatex` / `latexmk` and, if missing, installs a TeX toolchain for the host OS — complete with beamer, TikZ/PGF and the AMS packages, so Beamer decks and figures compile offline:
+   - **Windows** — **MiKTeX** via winget or the silent installer, with on-the-fly package installation.
+   - **macOS** — **BasicTeX** via Homebrew, then the `beamer`, `pictures`, `mathscience` and `latexextra` collections via `tlmgr`.
+   - **Linux** — **TeX Live** via the system package manager (`apt`, `dnf`, `pacman`, `zypper`, `apk` or `yum`).
+
+   On macOS and Linux the install needs root. If you are root, or `sudo` needs no password, it runs unattended; in a terminal it asks first; and in a piped `curl | bash` install, where there is no terminal to type a password into, it prints the exact command instead of hanging on an invisible prompt.
 7. **Zero-Configuration**: 100% hardcoded defaults — no `.env` file or cloud API keys required.
 
 ---

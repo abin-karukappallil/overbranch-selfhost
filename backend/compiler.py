@@ -16,6 +16,8 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable,
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
+from tex_tool_output import strip_tool_diagnostics
+
 logger = logging.getLogger("compiler")
 
 
@@ -34,6 +36,11 @@ def _run_tex(cmd, *, cwd, timeout, env, capture_output=True):
 
     By reading raw bytes and decoding with ``errors='replace'``, invalid bytes
     become U+FFFD (�) instead of crashing, and the PDF is still picked up.
+
+    Both streams are also cleared of the distribution's own setup advisories
+    (``tex_tool_output``). MiKTeX writes two of them to stderr on every run, and
+    callers here read stdout and stderr as a single TeX log, so this is the one
+    place that has to drop them for every consumer to see a clean log.
     """
     proc = subprocess.run(
         cmd,
@@ -50,6 +57,8 @@ def _run_tex(cmd, *, cwd, timeout, env, capture_output=True):
         proc.stderr = proc.stderr.decode("utf-8", errors="replace")
     elif proc.stderr is None:
         proc.stderr = ""
+    proc.stdout = strip_tool_diagnostics(proc.stdout)
+    proc.stderr = strip_tool_diagnostics(proc.stderr)
     return proc
 
 
@@ -77,7 +86,17 @@ _TEX_ERROR_RE = re.compile(r"^(?:\S+\.tex:\d+: .*|! .*)$", re.MULTILINE)
 # at all. Raising \errorcontextlines here, on the command line, shows the levels
 # that carry the user's text without adding a line to the document, so every
 # reported line number still refers to the source as written.
-_TEX_ENTRY = r"\errorcontextlines=20 \input{main.tex}"
+#
+# Written without the space before \input that would read more naturally. TeX
+# ends the integer at the `\` either way, but subprocess quotes any argument
+# containing a space (list2cmdline), and MiKTeX reads a quoted argument as a
+# file name: `! I can't find file '"\errorcontextlines=20 \input{main.tex}"'`.
+# Windows used to be given a bare `main.tex` to dodge that, which left every
+# Windows compile with TeX's one-level default context — so a `Missing $
+# inserted` carried no position and a Beamer frame's errors could not be placed
+# on the line they are really on. Keeping the argument space-free gives the
+# directive to MiKTeX and TeX Live alike, from one code path.
+_TEX_ENTRY = r"\errorcontextlines=20\input{main.tex}"
 # TeX truncates each context line to `half_error_line` (50 by default) and wraps
 # its output at `max_print_line` (79). Both are kpathsea settings an environment
 # variable overrides; widened, a context line holds enough of a frame to be found
@@ -86,12 +105,7 @@ _TEX_LOG_ENV = {"max_print_line": "10000", "error_line": "254", "half_error_line
 
 
 def _engine_command(engine_bin: str, *extra: str) -> List[str]:
-    # On Windows, arguments with spaces like "\errorcontextlines=20 \input{main.tex}"
-    # are quoted by subprocess (list2cmdline). MiKTeX treats quoted arguments as
-    # filenames and errors with "! I can't find file '\"\\errorcontextlines...'".
-    # Passing "main.tex" directly avoids quoting issues on Windows.
-    entry = "main.tex" if sys.platform == "win32" else _TEX_ENTRY
-    return [engine_bin, *extra, "-interaction=nonstopmode", "-file-line-error", "-jobname=main", entry]
+    return [engine_bin, *extra, "-interaction=nonstopmode", "-file-line-error", "-jobname=main", _TEX_ENTRY]
 
 
 def _attach_diagnostics(result: dict, output: str, tmpdir: Path) -> None:
@@ -1607,11 +1621,16 @@ def _compile_latex_impl(
             bib_notes: List[str] = []
             for _stub in _generate_stub_bibs(tmpdir, project_text):
                 bib_notes.append(f"{_stub} was not found; generated a placeholder from the document's citation keys.")
+            # Only ever edited in place: `_inject_hyperref` adds its \usepackage ahead of
+            # \begin{document} on that same line, so the compile copy keeps the source's
+            # line numbering. Windows used to prepend a whole `\errorcontextlines=20\relax`
+            # line here, because the directive could not be passed on the command line;
+            # that shifted every line TeX reported down by one, and nothing mapped it back,
+            # so on Windows every error marker, SyncTeX jump and "Ask AI to Fix" target was
+            # off by one — and the repair loop rewrote the line below the mistake. The
+            # directive now rides on the engine command line (`_TEX_ENTRY`) on every
+            # platform, which is where it belongs: it changes no line of the document.
             _compile_copy = _inject_hyperref(latex_code, project_text, tmpdir)
-            if sys.platform == "win32" and "\\errorcontextlines" not in _compile_copy:
-                # On Windows, command-line TeX args with spaces get quoted and break MiKTeX.
-                # Inject \errorcontextlines at the start of main.tex instead.
-                _compile_copy = "\\errorcontextlines=20\\relax\n" + _compile_copy
 
             if _compile_copy != latex_code:
                 tex_path.write_text(_compile_copy, encoding="utf-8")
@@ -1727,15 +1746,6 @@ def _compile_latex_impl(
                     )
                     last_output = (result.stdout or "") + "\n" + (result.stderr or "")
                     final_pass = last_output
-                except FileNotFoundError:
-                    if not last_output:
-                        install_hint = (
-                            "Please install MiKTeX (https://miktex.org/download) or run 'winget install MiKTeX.MiKTeX' on Windows, "
-                            "or 'apt install texlive-latex-base' on Linux."
-                        )
-                        last_output = f"[INFRASTRUCTURE ERROR] LaTeX compiler executable '{cmd[0]}' not found in system PATH. {install_hint}"
-                    continue
-
                     pdf_path = tmpdir / "main.pdf"
 
                     # latexmk/tectonic self-manage passes and bibliography; a direct
@@ -1816,11 +1826,16 @@ def _compile_latex_impl(
                             compiled.setdefault("diagnostics", []).extend(
                                 _bib_note_diagnostic(n) for n in dict.fromkeys(bib_notes))
                         return compiled
+                except FileNotFoundError:
+                    if not last_output:
+                        install_hint = (
+                            "Please install MiKTeX (https://miktex.org/download) or run 'winget install MiKTeX.MiKTeX' on Windows, "
+                            "or 'apt install texlive-latex-base' on Linux."
+                        )
+                        last_output = f"[INFRASTRUCTURE ERROR] LaTeX compiler executable '{cmd[0]}' not found in system PATH. {install_hint}"
+                    continue
                 except subprocess.TimeoutExpired:
                     last_output += f"\n[TIMEOUT] {cmd[0]} exceeded {COMPILE_TIMEOUT}s"
-                    continue
-                except FileNotFoundError as fnf:
-                    last_output += f"\n[INFRASTRUCTURE ERROR] Executable '{cmd[0]}' not found: {fnf}"
                     continue
                 except Exception as exc:
                     last_output += f"\n[INFRASTRUCTURE ERROR] Command '{cmd[0]}' failed: {exc}"

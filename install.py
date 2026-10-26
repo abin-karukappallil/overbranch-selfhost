@@ -244,8 +244,202 @@ def initialize_sqlite_database(python_bin: str):
     log_success("Local SQLite database initialized.")
 
 
+# ---------------------------------------------------------------------------
+# LaTeX toolchain
+# ---------------------------------------------------------------------------
+# What a TeX install has to carry for OverBranch. The compiler refuses to
+# auto-disable these (backend/compiler.py `_CRITICAL_PACKAGES`), because a
+# Beamer deck compiled without beamer, or a figure without tikz, produces a
+# corrupted PDF rather than a readable one. A TeX install missing them does not
+# degrade — it fails the compile. So install a scheme that includes them up
+# front rather than a bare engine.
+#
+# One command per package manager, deliberately not the smallest possible set:
+# re-running an installer because a deck needed pgfplots is worse than the
+# download.
+LINUX_TEX_PACKAGES = {
+    # Debian family: beamer lives in -recommended, tikz/pgf in -pictures.
+    "apt": ["texlive-latex-base", "texlive-latex-recommended", "texlive-latex-extra",
+            "texlive-pictures", "texlive-fonts-recommended", "texlive-science", "latexmk"],
+    # Arch split TeX Live into these collections in 2023; latexmk is in -binextra.
+    "pacman": ["texlive-basic", "texlive-latex", "texlive-latexrecommended",
+               "texlive-latexextra", "texlive-pictures", "texlive-fontsrecommended",
+               "texlive-mathscience", "texlive-binextra"],
+    # scheme-medium already carries beamer, pgf/tikz and the AMS packages.
+    "dnf": ["texlive-scheme-medium", "latexmk"],
+    "yum": ["texlive-scheme-medium", "latexmk"],
+    "zypper": ["texlive-scheme-medium", "texlive-latexmk"],
+    "apk": ["texlive", "texmf-dist-latexextra", "texmf-dist-pictures",
+            "texmf-dist-fontsrecommended", "texmf-dist-science"],
+}
+
+# Installed on top of macOS BasicTeX, which ships an engine and little else.
+# Collections rather than ~40 individual package names: one tlmgr run, and a
+# renamed upstream package cannot silently drop a template's requirement.
+MACOS_TLMGR_COLLECTIONS = [
+    "collection-latexrecommended",   # beamer, booktabs, caption …
+    "collection-latexextra",         # tcolorbox, titlesec, fancyhdr, enumitem …
+    "collection-pictures",           # pgf, tikz, pgfplots
+    "collection-mathscience",        # amsmath, amssymb, mathtools, siunitx
+    "collection-fontsrecommended",
+    "latexmk",
+]
+
+# BasicTeX and MacTeX both symlink their binaries here.
+MACOS_TEXBIN = "/Library/TeX/texbin"
+
+
+def _is_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def _sudo_available_without_password() -> bool:
+    """True when ``sudo`` runs without prompting (NOPASSWD or a live credential cache)."""
+    if not shutil.which("sudo"):
+        return False
+    try:
+        return subprocess.run(["sudo", "-n", "true"], check=False,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    except Exception:
+        return False
+
+
+def _interactive() -> bool:
+    """True when there is a terminal to ask a question on and read an answer from."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+def _confirm(question: str) -> bool:
+    if not _interactive():
+        return False
+    try:
+        return (input(f"{CYAN}[INPUT]{RESET} {question} [Y/n] ").strip().lower() or "y") in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def _run_privileged(cmd: list, *, what: str) -> bool:
+    """
+    Runs ``cmd`` as root, without ever blocking on an invisible password prompt.
+
+    A piped installer (``curl … | bash``) has no terminal, so a plain ``sudo``
+    there waits for a password nobody can see or type and the install appears to
+    hang. Root and a cached/NOPASSWD sudo run straight through; a terminal is
+    asked first, since the password prompt is the user's to answer; and with
+    neither, the exact command is printed and the installer carries on.
+    """
+    if _is_root():
+        full = cmd
+    elif _sudo_available_without_password():
+        full = ["sudo", "-n", *cmd]
+    elif _interactive() and shutil.which("sudo"):
+        log_info(f"{what} needs administrator rights; sudo will ask for your password.")
+        if not _confirm(f"Run: {' '.join(cmd)} ?"):
+            log_warn("Skipped at your request.")
+            return False
+        full = ["sudo", *cmd]
+    else:
+        log_warn(f"{what} needs root and this installer cannot ask for a password here.")
+        log_info(f"Run it yourself with:  sudo {' '.join(cmd)}")
+        return False
+
+    try:
+        return subprocess.run(full, check=False).returncode == 0
+    except Exception as exc:
+        log_warn(f"{what} failed to run: {exc}")
+        return False
+
+
+def _detect_linux_package_manager() -> "tuple[str, list] | tuple[None, None]":
+    """The first available package manager and the argv that installs with it unattended."""
+    for name, argv in (
+        ("apt", ["apt-get", "install", "-y"]),
+        ("dnf", ["dnf", "install", "-y"]),
+        ("pacman", ["pacman", "-S", "--needed", "--noconfirm"]),
+        ("zypper", ["zypper", "--non-interactive", "install"]),
+        ("apk", ["apk", "add", "--no-cache"]),
+        ("yum", ["yum", "install", "-y"]),
+    ):
+        if shutil.which(argv[0]):
+            return name, argv
+    return None, None
+
+
+def _install_latex_linux() -> bool:
+    manager, install_argv = _detect_linux_package_manager()
+    if not manager:
+        log_warn("No supported package manager found (apt, dnf, pacman, zypper, apk, yum).")
+        log_info("Install TeX Live with your system's package manager, or from https://tug.org/texlive/")
+        return False
+
+    packages = LINUX_TEX_PACKAGES[manager]
+    log_info(f"Installing TeX Live via {manager} ({len(packages)} package(s)); this can take several minutes...")
+
+    if manager == "apt":
+        # Without a package index this is "Unable to locate package" on a fresh container.
+        _run_privileged(["apt-get", "update"], what="Refreshing the apt package index")
+
+    if not _run_privileged([*install_argv, *packages], what="Installing TeX Live"):
+        log_warn("Automatic TeX Live installation did not complete.")
+        return False
+    return True
+
+
+def _install_latex_macos() -> bool:
+    if not shutil.which("brew"):
+        log_warn("Homebrew was not found, and it is how TeX is installed on macOS.")
+        log_info('Install it with:  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"')
+        log_info("Then re-run this installer, or install TeX directly from https://tug.org/mactex/")
+        return False
+
+    # brew must not run under sudo; the cask's installer asks for the password
+    # itself when it needs one, which only works with a terminal attached.
+    if not (_interactive() or _is_root()):
+        log_warn("Installing BasicTeX needs a terminal to confirm an administrator prompt.")
+        log_info("Run it yourself with:  brew install --cask basictex")
+        return False
+
+    log_info("Installing BasicTeX via Homebrew (~100 MB)...")
+    try:
+        if subprocess.run(["brew", "install", "--cask", "basictex"], check=False).returncode != 0:
+            log_warn("brew install --cask basictex did not succeed.")
+            log_info("For a complete TeX instead, try:  brew install --cask mactex-no-gui")
+            return False
+    except Exception as exc:
+        log_warn(f"Could not run Homebrew: {exc}")
+        return False
+
+    # BasicTeX's binaries are not on PATH until a new shell starts, and tlmgr is
+    # needed right now, so put them in front for the rest of this process.
+    if os.path.isdir(MACOS_TEXBIN):
+        os.environ["PATH"] = f"{MACOS_TEXBIN}{os.pathsep}{os.environ.get('PATH', '')}"
+
+    tlmgr = shutil.which("tlmgr") or os.path.join(MACOS_TEXBIN, "tlmgr")
+    if not os.path.isfile(tlmgr):
+        log_warn("BasicTeX installed but tlmgr was not found; skipping the extra packages.")
+        return bool(shutil.which("pdflatex"))
+
+    log_info("Adding the packages OverBranch needs (beamer, tikz/pgfplots, amsmath, ...)...")
+    _run_privileged([tlmgr, "update", "--self"], what="Updating tlmgr")
+    if not _run_privileged([tlmgr, "install", *MACOS_TLMGR_COLLECTIONS], what="Installing TeX packages"):
+        log_warn("BasicTeX is installed, but the extra collections did not all install.")
+        log_info(f"Finish with:  sudo tlmgr install {' '.join(MACOS_TLMGR_COLLECTIONS)}")
+    else:
+        log_info("For the fonts a few bundled templates use (EB Garamond, Roboto, Font Awesome), "
+                 "add:  sudo tlmgr install collection-fontsextra")
+    return True
+
+
 def check_or_install_latex():
-    """Checks for LaTeX engine (pdflatex/latexmk) and installs MiKTeX automatically on Windows if missing."""
+    """
+    Ensures a LaTeX engine is present, installing one for the host OS if not:
+    MiKTeX on Windows, TeX Live via the system package manager on Linux,
+    BasicTeX via Homebrew on macOS.
+    """
     log_info("Checking for LaTeX engine (pdflatex / latexmk)...")
 
     # 1. First check if pdflatex or latexmk is already available
@@ -411,14 +605,43 @@ def check_or_install_latex():
         log_warn("MiKTeX installer finished but pdflatex was not found immediately.")
         log_info("You can also install manually from: https://miktex.org/download")
         return False
+
+    # macOS / Linux. TeX being installed but not yet on PATH is the common case
+    # right after installing it: BasicTeX symlinks into /Library/TeX/texbin and a
+    # running shell has not picked that up, and upstream TeX Live installs to
+    # /usr/local/texlive/<year>/bin/<arch>/. Look there before installing again.
+    tex_dirs = [MACOS_TEXBIN]
+    for base in ("/usr/local/texlive", "/opt/texlive"):
+        tex_dirs += sorted((str(p.parent) for p in Path(base).glob("*/bin/*/pdflatex")), reverse=True)
+    for tex_dir in tex_dirs:
+        candidate = os.path.join(tex_dir, "pdflatex")
+        if os.path.isfile(candidate):
+            os.environ["PATH"] = f"{tex_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+            log_success(f"Found LaTeX compiler: {candidate}")
+            return True
+
+    log_warn("LaTeX engine (pdflatex / latexmk) not found on PATH.")
+    if system == "darwin":
+        installed = _install_latex_macos()
+    elif system == "linux":
+        installed = _install_latex_linux()
     else:
-        # Non-Windows systems: log advice
-        log_warn("LaTeX engine (pdflatex / latexmk) not found on PATH.")
-        log_info("Install TeX Live for your system:")
-        log_info("  • Ubuntu/Debian: sudo apt install -y texlive-latex-base texlive-latex-extra latexmk")
-        log_info("  • Arch Linux:    sudo pacman -S --noconfirm texlive-basic texlive-latexextra")
-        log_info("  • macOS:         brew install --cask mactex-no-gui")
+        log_info(f"Automatic TeX installation is not supported on {system or 'this platform'}.")
+        log_info("Install TeX Live from https://tug.org/texlive/ to enable offline PDF builds.")
         return False
+
+    compiler_bin = shutil.which("pdflatex") or shutil.which("latexmk")
+    if compiler_bin:
+        log_success(f"LaTeX compiler installed and ready: {compiler_bin}")
+        return True
+
+    if installed:
+        # The packages landed but this process's PATH predates them.
+        log_warn("TeX installed, but pdflatex is not on this shell's PATH yet.")
+        log_info("Open a new terminal (or re-run this installer) and it will be picked up.")
+    else:
+        log_warn("OverBranch will run, but PDF compilation stays unavailable until TeX is installed.")
+    return False
 
 
 def main():

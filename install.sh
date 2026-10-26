@@ -199,26 +199,151 @@ if [ $NODE_OK -eq 0 ]; then
     fi
 fi
 
-# Check pdflatex / latexmk (optional but recommended)
+# ------------------------------------------------------------------------------
+# LaTeX engine: check, and install one for this OS if it is missing
+# ------------------------------------------------------------------------------
+# The compiler refuses to auto-disable beamer, tikz, amsmath and the rest
+# (backend/compiler.py _CRITICAL_PACKAGES), because a deck built without beamer
+# is a corrupted PDF rather than a plain one. So install a scheme that carries
+# them, not a bare engine.
+
+# Runs "$@" as root without ever blocking on a password prompt nobody can see:
+# a piped installer (curl | bash) has no terminal, so a plain sudo there waits
+# forever and the install looks like it hung.
+run_privileged() {
+    if [ "$(id -u)" = "0" ]; then
+        "$@"
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+        sudo -n "$@"
+    elif command -v sudo >/dev/null 2>&1 && [ -t 0 ] && [ -t 1 ]; then
+        log_info "Administrator rights needed; sudo will ask for your password."
+        sudo "$@"
+    else
+        log_warn "This step needs root and there is no terminal here to ask for a password."
+        log_info "Run it yourself with:  sudo $*"
+        return 1
+    fi
+}
+
+install_texlive_linux() {
+    if command -v apt-get >/dev/null 2>&1; then
+        # Without a package index this is "Unable to locate package" on a fresh container.
+        run_privileged apt-get update || true
+        run_privileged apt-get install -y texlive-latex-base texlive-latex-recommended \
+            texlive-latex-extra texlive-pictures texlive-fonts-recommended \
+            texlive-science latexmk
+    elif command -v dnf >/dev/null 2>&1; then
+        run_privileged dnf install -y texlive-scheme-medium latexmk
+    elif command -v pacman >/dev/null 2>&1; then
+        # Arch split TeX Live into these collections in 2023; latexmk is in -binextra.
+        run_privileged pacman -S --needed --noconfirm texlive-basic texlive-latex \
+            texlive-latexrecommended texlive-latexextra texlive-pictures \
+            texlive-fontsrecommended texlive-mathscience texlive-binextra
+    elif command -v zypper >/dev/null 2>&1; then
+        run_privileged zypper --non-interactive install texlive-scheme-medium texlive-latexmk
+    elif command -v apk >/dev/null 2>&1; then
+        run_privileged apk add --no-cache texlive texmf-dist-latexextra \
+            texmf-dist-pictures texmf-dist-fontsrecommended texmf-dist-science
+    elif command -v yum >/dev/null 2>&1; then
+        run_privileged yum install -y texlive-scheme-medium latexmk
+    else
+        log_warn "No supported package manager found (apt, dnf, pacman, zypper, apk, yum)."
+        log_info "Install TeX Live from https://tug.org/texlive/"
+        return 1
+    fi
+}
+
+install_texlive_macos() {
+    if ! command -v brew >/dev/null 2>&1; then
+        log_warn "Homebrew was not found, and it is how TeX is installed on macOS."
+        log_info 'Install it with:  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+        log_info "Then re-run this installer, or install TeX from https://tug.org/mactex/"
+        return 1
+    fi
+    # brew must not be run under sudo; the cask asks for the password itself,
+    # which only works with a terminal attached.
+    if [ ! -t 0 ] || [ ! -t 1 ]; then
+        log_warn "Installing BasicTeX needs a terminal to confirm an administrator prompt."
+        log_info "Run it yourself with:  brew install --cask basictex"
+        return 1
+    fi
+    log_info "Installing BasicTeX via Homebrew (~100 MB)..."
+    if ! brew install --cask basictex; then
+        log_warn "brew install --cask basictex did not succeed."
+        log_info "For a complete TeX instead, try:  brew install --cask mactex-no-gui"
+        return 1
+    fi
+    # BasicTeX's binaries are not on PATH until a new shell starts, and tlmgr is
+    # needed right now.
+    if [ -d /Library/TeX/texbin ]; then
+        export PATH="/Library/TeX/texbin:$PATH"
+    fi
+    if ! command -v tlmgr >/dev/null 2>&1; then
+        log_warn "BasicTeX installed but tlmgr was not found; skipping the extra packages."
+        return 0
+    fi
+    log_info "Adding the packages OverBranch needs (beamer, tikz/pgfplots, amsmath, ...)..."
+    run_privileged tlmgr update --self || true
+    if run_privileged tlmgr install collection-latexrecommended collection-latexextra \
+            collection-pictures collection-mathscience collection-fontsrecommended latexmk; then
+        log_info "For the fonts a few bundled templates use (EB Garamond, Roboto, Font Awesome),"
+        log_info "add:  sudo tlmgr install collection-fontsextra"
+    else
+        log_warn "BasicTeX is installed, but the extra collections did not all install."
+    fi
+}
+
+# TeX may be installed yet absent from this shell's PATH — BasicTeX symlinks into
+# /Library/TeX/texbin, and upstream TeX Live installs to
+# /usr/local/texlive/<year>/bin/<arch>/ — so look there before installing again.
+if ! command -v pdflatex >/dev/null 2>&1 && ! command -v latexmk >/dev/null 2>&1; then
+    for tex_dir in /Library/TeX/texbin /usr/local/texlive/*/bin/* /opt/texlive/*/bin/*; do
+        if [ -x "$tex_dir/pdflatex" ]; then
+            export PATH="$tex_dir:$PATH"
+            break
+        fi
+    done
+fi
+
 if command -v pdflatex >/dev/null 2>&1 || command -v latexmk >/dev/null 2>&1; then
     log_ok "Found LaTeX compiler: $(command -v pdflatex || command -v latexmk)"
 else
     log_warn "LaTeX engine (pdflatex / latexmk) not found on PATH."
-    log_warn "You can install TeX Live anytime to enable full offline PDF builds:"
-    case "$DISTRO" in
-        ubuntu|debian|pop|mint)
-            echo "   -> sudo apt install -y texlive-latex-base texlive-latex-extra latexmk"
-            ;;
-        arch|manjaro)
-            echo "   -> sudo pacman -S --noconfirm texlive-basic texlive-latexextra"
-            ;;
-        fedora)
-            echo "   -> sudo dnf install -y texlive-scheme-basic latexmk"
-            ;;
-        macos)
-            echo "   -> brew install --cask mactex-no-gui"
-            ;;
-    esac
+    LATEX_INSTALLED=0
+    if [ "$MISSING_DEPS" -ne 0 ]; then
+        # The installer is about to stop for a missing Python or Node anyway;
+        # do not spend several minutes on TeX first.
+        log_info "Skipping the TeX install until the missing tools above are in place."
+        log_info "Re-run this installer afterwards and TeX will be installed automatically."
+    else
+        case "$DISTRO" in
+            macos)
+                install_texlive_macos && LATEX_INSTALLED=1 || true
+                ;;
+            windows)
+                log_info "Run install.ps1 (or install.py) on Windows to install MiKTeX automatically."
+                ;;
+            unknown)
+                log_info "Install TeX Live from https://tug.org/texlive/ to enable offline PDF builds."
+                ;;
+            *)
+                log_info "Installing TeX Live for your distribution; this can take several minutes..."
+                install_texlive_linux && LATEX_INSTALLED=1 || true
+                ;;
+        esac
+
+        if [ -d /Library/TeX/texbin ]; then
+            export PATH="/Library/TeX/texbin:$PATH"
+        fi
+        if command -v pdflatex >/dev/null 2>&1 || command -v latexmk >/dev/null 2>&1; then
+            log_ok "LaTeX compiler installed and ready: $(command -v pdflatex || command -v latexmk)"
+        elif [ "$LATEX_INSTALLED" -eq 1 ]; then
+            log_warn "TeX installed, but pdflatex is not on this shell's PATH yet."
+            log_info "Open a new terminal and it will be picked up."
+        else
+            log_warn "OverBranch will run, but PDF compilation stays unavailable until TeX is installed."
+        fi
+    fi
 fi
 
 if [ $MISSING_DEPS -ne 0 ]; then

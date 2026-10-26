@@ -24,6 +24,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from tex_tool_output import is_tool_diagnostic
+
 logger = logging.getLogger("latex_error_fixer")
 
 # Pre-compiled hot-path patterns. auto_heal_latex_code runs on the whole buffer
@@ -96,6 +98,10 @@ _RE_LOG_UNCLOSED_ENV = re.compile(
     r"\\begin\{([^}]+)\}\s+on\s+input\s+line\s+(\d+)\s+ended\s+by\s+\\end\{([^}]+)\}", re.IGNORECASE)
 # Consequences of an earlier error, not errors of their own.
 _LOG_CONSEQUENCES = ("emergency stop", "==> fatal error occurred", "fatal error occurred, no output")
+# "Output written on main.pdf (3 pages, 51293 bytes)." — TeX reached the end and
+# produced a document. A log carrying this did not fail, so the last-resort guess
+# at the bottom of parse_compilation_errors must not invent an error for it.
+_RE_LOG_OUTPUT_WRITTEN = re.compile(r"^Output written on .*\(\d+ pages?,", re.MULTILINE)
 
 
 def _classify_tex_error(msg: str) -> Tuple[str, str]:
@@ -254,9 +260,19 @@ def parse_compilation_errors(error_text: str) -> List[ParsedLatexError]:
             deduped.append(err)
 
     if not deduped and error_text.strip():
-        # Fallback when TeX failed but specific error patterns did not match
-        clean_lines = [ln.strip() for ln in error_text.splitlines() if ln.strip()]
-        if clean_lines:
+        # Fallback when TeX failed but specific error patterns did not match.
+        #
+        # Two things must not be guessed at. The TeX distribution's own advisories
+        # are not the document's errors — MiKTeX appends two to every run on Windows
+        # (tex_tool_output), and the last line of a clean MiKTeX log is its update
+        # nag, which this guess used to report as the document's LaTeX error. And a
+        # log that records a finished PDF describes a run that succeeded, so there
+        # is no error in it to find.
+        clean_lines = [ln.strip() for ln in error_text.splitlines()
+                       if ln.strip() and not is_tool_diagnostic(ln)]
+        built_pdf = bool(_RE_LOG_OUTPUT_WRITTEN.search(error_text)) and not any(
+            c in error_text.lower() for c in _LOG_CONSEQUENCES)
+        if clean_lines and not built_pdf:
             err_line = next(
                 (ln for ln in clean_lines if ln.startswith("!") or "fatal error" in ln.lower() or "error:" in ln.lower()),
                 clean_lines[0] if any("error" in ln.lower() for ln in clean_lines) else clean_lines[-1]
