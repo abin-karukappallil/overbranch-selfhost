@@ -12,50 +12,68 @@ cd "$DIR"
 
 ACTION="${1:-up}"
 
-# 1. Handle management subcommands that do not need daemon spinup or banners
+# 1. Determine if sudo is required to communicate with Docker socket (Linux non-root users)
+SUDO_PREFIX=""
+if [ "$(id -u)" -ne 0 ] && command -v docker >/dev/null 2>&1; then
+    DOCKER_ERR=$(docker info 2>&1 || true)
+    if echo "$DOCKER_ERR" | grep -qi "permission denied"; then
+        if command -v sudo >/dev/null 2>&1; then
+            echo "[INFO] Non-root user '$USER' does not have direct permission for /var/run/docker.sock."
+            echo "[INFO] Using 'sudo' for Docker commands (you may be prompted for your sudo password)..."
+            SUDO_PREFIX="sudo "
+            
+            # Attempt to add user to docker group so future logins don't require sudo
+            if ! groups "$USER" 2>/dev/null | grep -q "\bdocker\b"; then
+                echo "[INFO] Adding '$USER' to the 'docker' group for future sessions..."
+                sudo usermod -aG docker "$USER" 2>/dev/null || true
+                echo "[TIP] To run Docker without sudo in future sessions, run: newgrp docker"
+            fi
+        fi
+    fi
+fi
+
+# 2. Determine Docker Compose binary/plugin
+if ${SUDO_PREFIX}docker compose version >/dev/null 2>&1 || docker compose version >/dev/null 2>&1; then
+    COMPOSE_CMD="${SUDO_PREFIX}docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE_CMD="${SUDO_PREFIX}docker-compose"
+else
+    # Install compose plugin on Linux if missing
+    if [ "$(uname -s)" = "Linux" ]; then
+        if command -v apt-get >/dev/null 2>&1; then
+            (${SUDO_PREFIX}apt-get update && ${SUDO_PREFIX}apt-get install -y docker-compose-plugin) 2>/dev/null || true
+        elif command -v pacman >/dev/null 2>&1; then
+            ${SUDO_PREFIX}pacman -Sy --noconfirm docker-compose 2>/dev/null || true
+        elif command -v dnf >/dev/null 2>&1; then
+            ${SUDO_PREFIX}dnf install -y docker-compose-plugin 2>/dev/null || true
+        fi
+    fi
+    if ${SUDO_PREFIX}docker compose version >/dev/null 2>&1 || docker compose version >/dev/null 2>&1; then
+        COMPOSE_CMD="${SUDO_PREFIX}docker compose"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        COMPOSE_CMD="${SUDO_PREFIX}docker-compose"
+    else
+        echo "[ERROR] Docker Compose plugin or docker-compose binary not found." >&2
+        exit 1
+    fi
+fi
+
+# 3. Handle management subcommands
 case "$ACTION" in
     down|stop)
         echo "[INFO] Stopping OverBranch containers..."
-        if docker compose version >/dev/null 2>&1; then
-            exec docker compose down
-        elif command -v docker-compose >/dev/null 2>&1; then
-            exec docker-compose down
-        else
-            echo "[ERROR] Docker Compose not found." >&2
-            exit 1
-        fi
+        exec $COMPOSE_CMD down
         ;;
     logs)
         shift 2>/dev/null || true
-        if docker compose version >/dev/null 2>&1; then
-            exec docker compose logs -f "$@"
-        elif command -v docker-compose >/dev/null 2>&1; then
-            exec docker-compose logs -f "$@"
-        else
-            echo "[ERROR] Docker Compose not found." >&2
-            exit 1
-        fi
+        exec $COMPOSE_CMD logs -f "$@"
         ;;
     ps|status)
-        if docker compose version >/dev/null 2>&1; then
-            exec docker compose ps
-        elif command -v docker-compose >/dev/null 2>&1; then
-            exec docker-compose ps
-        else
-            echo "[ERROR] Docker Compose not found." >&2
-            exit 1
-        fi
+        exec $COMPOSE_CMD ps
         ;;
     restart)
         echo "[INFO] Restarting OverBranch containers..."
-        if docker compose version >/dev/null 2>&1; then
-            exec docker compose restart
-        elif command -v docker-compose >/dev/null 2>&1; then
-            exec docker-compose restart
-        else
-            echo "[ERROR] Docker Compose not found." >&2
-            exit 1
-        fi
+        exec $COMPOSE_CMD restart
         ;;
 esac
 
@@ -65,7 +83,7 @@ echo "    100% Local • Zero API Keys • SQLite • Gemini Web2API"
 echo "============================================================"
 echo ""
 
-# 2. Detect and install Docker if not present
+# 4. Detect and install Docker if not present
 if ! command -v docker >/dev/null 2>&1; then
     echo "[INFO] Docker was not found on your system."
     OS_TYPE="$(uname -s)"
@@ -88,6 +106,8 @@ if ! command -v docker >/dev/null 2>&1; then
                 fi
                 sudo systemctl enable --now docker 2>/dev/null || sudo service docker start 2>/dev/null || true
                 sudo usermod -aG docker "$USER" 2>/dev/null || true
+                SUDO_PREFIX="sudo "
+                COMPOSE_CMD="${SUDO_PREFIX}${COMPOSE_CMD}"
             else
                 echo "[ERROR] Sudo or root privileges are required to install Docker on Linux." >&2
                 exit 1
@@ -117,34 +137,8 @@ if ! command -v docker >/dev/null 2>&1; then
     esac
 fi
 
-# 3. Determine Docker Compose binary/plugin
-if docker compose version >/dev/null 2>&1; then
-    COMPOSE_CMD="docker compose"
-elif command -v docker-compose >/dev/null 2>&1; then
-    COMPOSE_CMD="docker-compose"
-else
-    # Install compose plugin on Linux if missing
-    if [ "$(uname -s)" = "Linux" ]; then
-        if command -v apt-get >/dev/null 2>&1; then
-            (sudo apt-get update && sudo apt-get install -y docker-compose-plugin) 2>/dev/null || true
-        elif command -v pacman >/dev/null 2>&1; then
-            sudo pacman -Sy --noconfirm docker-compose 2>/dev/null || true
-        elif command -v dnf >/dev/null 2>&1; then
-            sudo dnf install -y docker-compose-plugin 2>/dev/null || true
-        fi
-    fi
-    if docker compose version >/dev/null 2>&1; then
-        COMPOSE_CMD="docker compose"
-    elif command -v docker-compose >/dev/null 2>&1; then
-        COMPOSE_CMD="docker-compose"
-    else
-        echo "[ERROR] Docker Compose plugin or docker-compose binary not found." >&2
-        exit 1
-    fi
-fi
-
-# 4. Ensure Docker daemon is running
-if ! docker info >/dev/null 2>&1; then
+# 5. Ensure Docker daemon is running
+if ! ${SUDO_PREFIX}docker info >/dev/null 2>&1; then
     echo "[INFO] Docker daemon is not active. Attempting to start Docker service..."
     if [ "$(uname -s)" = "Darwin" ]; then
         open -a Docker 2>/dev/null || true
@@ -160,13 +154,13 @@ if ! docker info >/dev/null 2>&1; then
     echo "[INFO] Waiting for Docker daemon to become responsive..."
     for i in $(seq 1 20); do
         sleep 2
-        if docker info >/dev/null 2>&1; then
+        if ${SUDO_PREFIX}docker info >/dev/null 2>&1; then
             echo "[SUCCESS] Docker daemon is running!"
             break
         fi
     done
 
-    if ! docker info >/dev/null 2>&1; then
+    if ! ${SUDO_PREFIX}docker info >/dev/null 2>&1; then
         echo "[ERROR] Could not connect to Docker daemon. Please ensure Docker is running and rerun:" >&2
         echo "  sudo systemctl start docker   (Linux)" >&2
         echo "  or start Docker Desktop       (macOS / Windows)" >&2
@@ -174,7 +168,7 @@ if ! docker info >/dev/null 2>&1; then
     fi
 fi
 
-# 5. Prepare required local files and directories (prevents Docker directory-mount bug)
+# 6. Prepare required local files and directories (prevents Docker directory-mount bug)
 if [ -d "$DIR/overbranch.db" ]; then
     echo "[WARN] Detected 'overbranch.db' as a directory. Correcting to SQLite database file..."
     rm -rf "$DIR/overbranch.db"
@@ -184,7 +178,7 @@ if [ ! -f "$DIR/overbranch.db" ]; then
 fi
 mkdir -p "$DIR/uploads"
 
-# 6. Execute Docker Compose
+# 7. Execute Docker Compose
 case "$ACTION" in
     build)
         echo "[INFO] Building and starting OverBranch via Docker Compose ($COMPOSE_CMD up --build -d)..."

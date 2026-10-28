@@ -47,27 +47,48 @@ def log_error(msg: str):
     print(f"{BOLD}{RED}[OverBranch ERROR]{RESET} {msg}")
 
 
-def get_compose_command():
-    """Returns the available Docker Compose command array."""
+def check_sudo_needed() -> list[str]:
+    """Checks if sudo prefix is required to access /var/run/docker.sock on Linux."""
+    if platform.system().lower() != "linux" or os.geteuid() == 0:
+        return []
     try:
-        res = subprocess.run(["docker", "compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        proc = subprocess.run(["docker", "info"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        if "permission denied" in (proc.stderr or "").lower():
+            if shutil.which("sudo"):
+                user = os.environ.get("USER", "")
+                log_runner(f"User '{user}' requires sudo permissions for /var/run/docker.sock.")
+                log_runner("Using 'sudo docker' (you may be prompted for your sudo password)...")
+                if user:
+                    subprocess.run(["sudo", "usermod", "-aG", "docker", user], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                return ["sudo"]
+    except Exception:
+        pass
+    return []
+
+
+def get_compose_command(sudo_prefix: list[str] = None):
+    """Returns the available Docker Compose command array."""
+    prefix = sudo_prefix if sudo_prefix is not None else check_sudo_needed()
+    try:
+        res = subprocess.run(prefix + ["docker", "compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         if res.returncode == 0:
-            return ["docker", "compose"]
+            return prefix + ["docker", "compose"]
     except Exception:
         pass
 
     if shutil.which("docker-compose"):
-        return ["docker-compose"]
+        return prefix + ["docker-compose"]
 
     return None
 
 
-def ensure_docker_daemon_running():
+def ensure_docker_daemon_running(sudo_prefix: list[str] = None):
     """Verifies that the Docker daemon is responsive, attempting to start it if inactive."""
     system = platform.system().lower()
+    prefix = sudo_prefix if sudo_prefix is not None else check_sudo_needed()
 
     try:
-        res = subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        res = subprocess.run(prefix + ["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         if res.returncode == 0:
             return True
     except Exception:
@@ -92,7 +113,7 @@ def ensure_docker_daemon_running():
     for i in range(20):
         time.sleep(2)
         try:
-            if subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0:
+            if subprocess.run(prefix + ["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0:
                 log_runner("Docker daemon is active and responsive.")
                 return True
         except Exception:
