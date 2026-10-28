@@ -33,20 +33,32 @@ export function LandingHeader({ initialIsAuthenticated }: LandingHeaderProps = {
 
       {/* Center Navigation Pill */}
       <nav className="pointer-events-auto hidden lg:flex items-center gap-1 bg-black text-white px-3 py-1.5 rounded-full border-2 border-black font-mono text-[11px] xl:text-xs font-bold uppercase tracking-wider shadow-2xl shrink-0">
-        <Link
-          href={isAuthenticated ? "/dashboard?openPdfModal=true" : "/convert"}
+        <a
+          href="#pdf-to-latex"
           className="px-2.5 py-1 rounded-full text-white/90 hover:bg-[#00CC68] hover:text-black transition-all duration-150"
         >
           PDF TO LATEX
-        </Link>
-        <Link
-          href="/templates"
+        </a>
+        <a
+          href="#templates"
           className="px-2.5 py-1 rounded-full text-white/90 hover:bg-[#00CC68] hover:text-black transition-all duration-150"
         >
           TEMPLATES
-        </Link>
+        </a>
         <a
-          href="https://github.com/abin-karukappallil/overbranch-selfhost"
+          href="#features"
+          className="px-2.5 py-1 rounded-full text-white/90 hover:bg-white hover:text-black transition-all duration-150"
+        >
+          FEATURES
+        </a>
+        <a
+          href="#self-host"
+          className="px-2.5 py-1 rounded-full text-white/90 hover:bg-white hover:text-black transition-all duration-150"
+        >
+          SELF-HOST
+        </a>
+        <a
+          href="https://github.com/abin-karukappallil/overbranch"
           target="_blank"
           rel="noopener noreferrer"
           className="px-2.5 py-1 rounded-full text-[#00CC68] hover:bg-white hover:text-black transition-all duration-150 flex items-center gap-1 font-bold"
@@ -59,7 +71,7 @@ export function LandingHeader({ initialIsAuthenticated }: LandingHeaderProps = {
       {/* Right Controls / Auth */}
       <div className="pointer-events-auto hidden lg:flex items-center gap-2.5 shrink-0">
         <a
-          href="https://github.com/abin-karukappallil/overbranch-selfhost/issues"
+          href="https://github.com/abin-karukappallil/overbranch/issues"
           target="_blank"
           rel="noopener noreferrer"
           className="bg-black text-[#00CC68] hover:text-white px-3 py-1.5 rounded-full border-2 border-black font-mono text-[11px] xl:text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all duration-150 hover:bg-zinc-900"
@@ -105,39 +117,50 @@ export function LandingHeader({ initialIsAuthenticated }: LandingHeaderProps = {
       {mobileMenuOpen && (
         <div className="pointer-events-auto md:hidden fixed inset-x-4 top-20 bg-black text-white p-6 border-4 border-black rounded-3xl shadow-2xl font-mono text-sm font-bold uppercase tracking-wider space-y-4 z-50">
           <div className="flex flex-col space-y-3">
+            <a
+              href="#product"
+              onClick={() => setMobileMenuOpen(false)}
+              className="px-3 py-2 rounded-lg hover:bg-white/10 text-white"
+            >
+              PRODUCT
+            </a>
+            <a
+              href="#pdf-to-latex"
+              onClick={() => setMobileMenuOpen(false)}
+              className="px-3 py-2 rounded-lg hover:bg-[#00CC68]/20 text-[#00CC68]"
+            >
+              PDF TO LATEX
+            </a>
+            <a
+              href="#templates"
+              onClick={() => setMobileMenuOpen(false)}
+              className="px-3 py-2 rounded-lg hover:bg-[#00CC68]/20 text-[#00CC68]"
+            >
+              TEMPLATES
+            </a>
+            <a
+              href="#features"
+              onClick={() => setMobileMenuOpen(false)}
+              className="px-3 py-2 rounded-lg hover:bg-white/10 text-white"
+            >
+              FEATURES
+            </a>
             <Link
               href={isAuthenticated ? "/dashboard?openPdfModal=true" : "/convert"}
               onClick={() => setMobileMenuOpen(false)}
-              className="px-3 py-2 rounded-lg hover:bg-[#00CC68]/20 text-[#00CC68] font-bold"
+              className="px-3 py-2 rounded-lg bg-[#00CC68]/15 text-[#00CC68] hover:bg-[#00CC68]/25 font-bold"
             >
-              PDF TO LATEX
+              {isAuthenticated ? "PDF TO LATEX" : "PDF TO LATEX (FREE GUEST)"}
             </Link>
-            <Link
-              href="/templates"
-              onClick={() => setMobileMenuOpen(false)}
-              className="px-3 py-2 rounded-lg hover:bg-[#00CC68]/20 text-[#00CC68] font-bold"
-            >
-              TEMPLATES
-            </Link>
-            {isAuthenticated ? (
-              <Link
-                href="/dashboard"
-                onClick={() => setMobileMenuOpen(false)}
-                className="px-3 py-2 rounded-lg hover:bg-white/10 text-white font-bold"
-              >
-                WORKSPACE
-              </Link>
-            ) : (
-              <Link
-                href="/login"
-                onClick={() => setMobileMenuOpen(false)}
-                className="px-3 py-2 rounded-lg hover:bg-white/10 text-white font-bold"
-              >
-                SIGN IN
-              </Link>
-            )}
             <a
-              href="https://github.com/abin-karukappallil/overbranch-selfhost"
+              href="#self-host"
+              onClick={() => setMobileMenuOpen(false)}
+              className="px-3 py-2 rounded-lg hover:bg-white/10 text-white"
+            >
+              SELF-HOST
+            </a>
+            <a
+              href="https://github.com/abin-karukappallil/overbranch"
               target="_blank"
               rel="noopener noreferrer"
               onClick={() => setMobileMenuOpen(false)}
@@ -150,7 +173,7 @@ export function LandingHeader({ initialIsAuthenticated }: LandingHeaderProps = {
               <ArrowUpRight className="w-4 h-4" />
             </a>
             <a
-              href="https://github.com/abin-karukappallil/overbranch-selfhost/issues"
+              href="https://github.com/abin-karukappallil/overbranch/issues"
               target="_blank"
               rel="noopener noreferrer"
               onClick={() => setMobileMenuOpen(false)}

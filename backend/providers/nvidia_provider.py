@@ -4,7 +4,8 @@ nvidia_provider.py — NVIDIA NIM API Provider using OpenAI Python SDK.
 Connects to NVIDIA NIM endpoints at https://integrate.api.nvidia.com/v1
 using NVIDIA_API_KEY (with rotation across NVIDIA_API_KEY_1..5).
 Defaults to deepseek-ai/deepseek-v4.1-flash.
-Supports text and native multimodal / image inputs.
+Text only: image input goes to Gemini / Gemini (secondary), which the router
+cycles for any request carrying image parts.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from dotenv import load_dotenv
 from openai import APIError, APITimeoutError, AuthenticationError, OpenAI, RateLimitError
 
 from cancellation import LLMOperationCancelled
@@ -45,12 +47,17 @@ NVIDIA_MODEL_ALIASES = {
     "nvidia:z-ai/glm-5.3": "z-ai/glm-5.3",
     "nvidia/nemotron-3-super-120b-a12b": "nvidia/nemotron-3-super-120b-a12b",
     "nemotron-3-super-120b-a12b": "nvidia/nemotron-3-super-120b-a12b",
-    "meta/llama-3.2-11b-vision-instruct": "meta/llama-3.2-11b-vision-instruct",
 }
 
 
 def load_nvidia_keys() -> List[str]:
     """Loads up to five server-side NVIDIA API keys from environment."""
+    root_env = Path(__file__).resolve().parent.parent.parent / ".env"
+    backend_env = Path(__file__).resolve().parent.parent / ".env"
+    if root_env.exists():
+        load_dotenv(dotenv_path=root_env, override=False)
+    if backend_env.exists():
+        load_dotenv(dotenv_path=backend_env, override=False)
 
     keys: List[str] = []
     # Primary key first
@@ -77,11 +84,13 @@ def load_nvidia_keys() -> List[str]:
 
 class NvidiaProvider(LLMProvider):
     """
-    NVIDIA NIM API provider with key pool rotation,
-    OpenAI-compatible client, and multimodal support.
+    NVIDIA NIM API provider with key pool rotation and an OpenAI-compatible client.
+
+    Text only (``supports_images = False``): the vision model it used to carry is gone,
+    and the router keeps image requests on the Gemini endpoints.
     """
 
-    supports_images = True
+    supports_images = False
 
     def __init__(self, pool: Optional[KeyPool] = None):
         self.base_url = os.getenv("NVIDIA_BASE_URL", DEFAULT_NVIDIA_BASE_URL).rstrip("/")
@@ -140,11 +149,6 @@ class NvidiaProvider(LLMProvider):
             {
                 "id": "nvidia/nemotron-3-super-120b-a12b",
                 "label": "Nemotron 3 Super 120B (NVIDIA NIM)",
-                "default": False,
-            },
-            {
-                "id": "meta/llama-3.2-11b-vision-instruct",
-                "label": "Llama 3.2 11B Vision (NVIDIA NIM)",
                 "default": False,
             },
         ]
@@ -263,7 +267,7 @@ class NvidiaProvider(LLMProvider):
 
         if not leases:
             raise LLMProviderError(
-                "No NVIDIA API keys configured. Provide one in settings or use local Gemini Web2API.",
+                "No NVIDIA API keys configured. Set NVIDIA_API_KEY in .env or provide one in settings.",
                 provider="nvidia",
                 kind=FailureKind.AUTH,
             )

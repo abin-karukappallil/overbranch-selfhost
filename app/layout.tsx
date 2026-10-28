@@ -31,7 +31,11 @@ export const viewport = {
 };
 
 export const metadata: Metadata = {
-  metadataBase: new URL("http://localhost:3000"),
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_APP_URL && !process.env.NEXT_PUBLIC_APP_URL.includes("localhost")
+      ? process.env.NEXT_PUBLIC_APP_URL
+      : "https://overbranch.app"
+  ),
   title: {
     default: "OverBranch — 100% Free & Open-Source Agentic LaTeX Code Editor",
     template: "OverBranch | %s",
@@ -89,10 +93,11 @@ export const metadata: Metadata = {
     ],
   },
   verification: {
-    google: undefined,
+    google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION || undefined,
   },
 };
 
+import { GuestMigrationListener } from "@/components/GuestMigrationListener";
 import { GoogleAnalytics } from "@/components/GoogleAnalytics";
 import { CookieConsentBanner } from "@/components/CookieConsentBanner";
 
@@ -116,6 +121,7 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <TRPCProvider>
+            <GuestMigrationListener />
             {children}
             <CookieConsentBanner />
             <Toaster position="top-right" richColors />

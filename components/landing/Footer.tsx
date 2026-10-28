@@ -19,7 +19,7 @@ export function LandingFooter() {
           <div className="pt-2 text-xs font-mono">
             <span className="text-black/90">OverBranch is in active Beta. Found bugs? </span>
             <a
-              href="https://github.com/abin-karukappallil/overbranch-selfhost/issues"
+              href="https://github.com/abin-karukappallil/overbranch/issues"
               target="_blank"
               rel="noopener noreferrer"
               className="underline font-bold hover:bg-black hover:text-white px-1 rounded transition-colors"
@@ -48,7 +48,7 @@ export function LandingFooter() {
         <div className="space-y-2 text-center md:text-right">
           <div>
             <a
-              href="https://github.com/abin-karukappallil/overbranch-selfhost"
+              href="https://github.com/abin-karukappallil/overbranch"
               target="_blank"
               rel="noopener noreferrer"
               className="text-black hover:bg-black hover:text-white px-2 py-1 transition-colors"
@@ -58,7 +58,7 @@ export function LandingFooter() {
           </div>
           <div>
             <a
-              href="https://github.com/abin-karukappallil/overbranch-selfhost/issues"
+              href="https://github.com/abin-karukappallil/overbranch/issues"
               target="_blank"
               rel="noopener noreferrer"
               className="text-black hover:bg-black hover:text-white px-2 py-1 transition-colors underline"
@@ -76,7 +76,7 @@ export function LandingFooter() {
           </div>
           <div>
             <a
-              href="https://github.com/abin-karukappallil/overbranch-selfhost"
+              href="https://github.com/abin-karukappallil/overbranch"
               target="_blank"
               rel="noopener noreferrer"
               className="text-black hover:bg-black hover:text-white px-2 py-1 transition-colors"

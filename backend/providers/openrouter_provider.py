@@ -36,6 +36,14 @@ _MINIMAX_M3_ALIASES = {
 
 def load_openrouter_keys() -> List[str]:
     """Up to five server-side OpenRouter keys, numbered first, then any comma list."""
+    from pathlib import Path
+    from dotenv import load_dotenv
+    _root_env = Path(__file__).resolve().parent.parent.parent / ".env"
+    _backend_env = Path(__file__).resolve().parent.parent / ".env"
+    if _root_env.exists():
+        load_dotenv(dotenv_path=_root_env, override=False)
+    if _backend_env.exists():
+        load_dotenv(dotenv_path=_backend_env, override=False)
 
     keys: List[str] = []
     for i in range(1, MAX_KEYS + 1):
@@ -123,7 +131,7 @@ class OpenRouterProvider(LLMProvider):
             leases.insert(0, ("openrouter#user", user_key, False))
         if not leases:
             raise LLMProviderError(
-                "No OpenRouter API keys configured. Provide one in settings or use local Gemini Web2API.",
+                "No OpenRouter API keys configured. Set OPENROUTER_API_KEY_1..5 in .env.",
                 provider="OpenRouter", kind=FailureKind.AUTH,
             )
 

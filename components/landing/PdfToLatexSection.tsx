@@ -54,7 +54,7 @@ export function LandingPdfToLatex({ initialIsAuthenticated }: LandingPdfToLatexP
               <span className="text-[#00CC68] font-bold">ℹ️ Beta Notice:</span>
               <span>PDF decompilation is in active Beta. Layouts and extracted formulas are constantly improving — if you find formatting quirks or bugs, please</span>
               <a
-                href="https://github.com/abin-karukappallil/overbranch-selfhost/issues"
+                href="https://github.com/abin-karukappallil/overbranch/issues"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-[#00CC68] hover:underline font-bold inline-flex items-center gap-1"

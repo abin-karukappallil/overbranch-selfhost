@@ -1,7 +1,11 @@
 import type { MetadataRoute } from "next";
 
 export function getBaseUrl(): string {
-  return "http://localhost:3000";
+  const envUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.BETTER_AUTH_URL;
+  if (envUrl && !envUrl.includes("localhost") && !envUrl.includes("127.0.0.1")) {
+    return envUrl.replace(/\/$/, "");
+  }
+  return "https://overbranch.app";
 }
 
 export default function sitemap(): MetadataRoute.Sitemap {

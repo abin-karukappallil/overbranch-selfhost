@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from project_storage import get_project_disk_path, get_supabase_client, upsert_latex_document
+from project_storage import create_empty_project, get_project_disk_path, get_supabase_client, upsert_latex_document
 
 logger = logging.getLogger("pdf2latex.storage")
 
@@ -101,47 +101,5 @@ def write_output_to_project(project_id: str, out_dir: Path, tex_name: str = "mai
 def create_project_for_conversion(owner_id: str, name: Optional[str], filename: str,
                                   guest_session_id: Optional[str] = None) -> Dict[str, Any]:
     """Creates a project (and, for guests, the 24h guest_projects record) to import into."""
-    project_id = str(uuid.uuid4())
     base = name or Path(filename or "Imported PDF").stem or "Imported PDF"
-    clean_name = re.sub(r"[^\w\s\-().]", "", base).strip()[:80] or "Imported PDF"
-    slug = re.sub(r"[^a-z0-9]+", "-", clean_name.lower()).strip("-") or "imported-pdf"
-
-    # Seed an empty main.tex on disk, mirroring trpc projects.createProject
-    main = get_project_disk_path(project_id, "main.tex")
-    main.parent.mkdir(parents=True, exist_ok=True)
-    main.write_text("", encoding="utf-8")
-
-    sb = _supabase()
-    if sb is None:
-        return {"project_id": project_id, "name": clean_name}
-
-    now_ts = int(datetime.now(timezone.utc).timestamp())
-    try:
-        sb.table("projects").insert({
-            "id": project_id,
-            "owner_id": owner_id,
-            "name": clean_name,
-            "description": "Imported from PDF",
-            "repository": f"prostack/{slug}",
-            "default_branch": "main.tex",
-            "language": "latex",
-            "status": "active",
-            "is_public": 0,
-            "is_favorite": 0,
-            "template": "PDF Import",
-            "stars_count": 0,
-            "created_at": now_ts,
-            "updated_at": now_ts,
-            "last_active_at": now_ts,
-        }).execute()
-        sb.table("project_members").insert({
-            "id": str(uuid.uuid4()),
-            "project_id": project_id,
-            "user_id": owner_id,
-            "role": "Owner",
-            "joined_at": now_ts,
-        }).execute()
-    except Exception as e:
-        logger.warning(f"Project row creation failed: {e}")
-
-    return {"project_id": project_id, "name": clean_name}
+    return create_empty_project(owner_id, base, guest_session_id, template_tag="PDF Import")

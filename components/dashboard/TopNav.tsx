@@ -67,7 +67,7 @@ export function DashboardTopNav({ onOpenCommandPalette, collapsed, onToggleMobil
 
       <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
         <a
-          href="https://github.com/abin-karukappallil/overbranch-selfhost/issues"
+          href="https://github.com/abin-karukappallil/overbranch/issues"
           target="_blank"
           rel="noopener noreferrer"
           className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-slate-200 dark:border-[#282A30] bg-slate-100 dark:bg-[#1A1C22] hover:bg-slate-200 dark:hover:bg-[#22242C] text-[11px] text-slate-600 dark:text-[#9E9E9E] hover:text-slate-900 dark:hover:text-[#E2E4E9] font-mono transition-colors shrink-0"

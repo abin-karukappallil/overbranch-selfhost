@@ -7,6 +7,19 @@
 
 import { authClient } from "./auth-client";
 
+let cachedToken: string | null = "selfhost-token";
+let cachedUserId: string | null = "selfhost-user";
+
+export function clearCachedSession(): void {
+  cachedToken = "selfhost-token";
+  cachedUserId = "selfhost-user";
+}
+
+export async function refreshSession(): Promise<string | null> {
+  return "selfhost-token";
+}
+
+
 /**
  * Returns authorization headers including Bearer token, user ID, and guest token.
  */

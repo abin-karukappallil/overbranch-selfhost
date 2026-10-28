@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Plus,
+  FileArchive,
   FileCode2,
   Search,
   FileText,
@@ -16,6 +17,7 @@ import {
   XCircle,
   Crown,
   Trash2,
+  Download,
   AlertTriangle,
   ArrowRight,
   Sparkles,
@@ -29,6 +31,8 @@ import { ProjectCardSkeleton } from "@/components/ui/skeleton-loader";
 import { toast } from "sonner";
 import { trpc } from "@/trpc/client";
 import { ImportPdfDialog } from "@/components/pdf-import/ImportPdfDialog";
+import { ImportZipDialog } from "@/components/project-import/ImportZipDialog";
+import { downloadAllProjectsZip, downloadProjectZip } from "@/components/project-import/useZipImport";
 
 function DashboardContent() {
   const router = useRouter();
@@ -37,6 +41,7 @@ function DashboardContent() {
   const [filterTemplate, setFilterTemplate] = useState("all");
   const [newModalOpen, setNewModalOpen] = useState(false);
   const [pdfModalOpen, setPdfModalOpen] = useState(false);
+  const [zipModalOpen, setZipModalOpen] = useState(false);
   const importedProjectId = useRef<string | null>(null);
   const [newProjName, setNewProjName] = useState("");
   const [deleteConfirmProj, setDeleteConfirmProj] = useState<any | null>(null);
@@ -151,18 +156,17 @@ function DashboardContent() {
     <div className="space-y-8 animate-fade-in pb-16 text-slate-900 dark:text-[#E2E4E9]">
       {/* Header Banner */}
       <div className="relative p-6 sm:p-8 rounded-xl border border-slate-200 dark:border-[#282A30] bg-white dark:bg-[#141519] shadow-sm dark:shadow-none overflow-hidden">
-        <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5">
-          <div className="space-y-1.5">
-
+        <div className="relative z-10 flex flex-col xl:flex-row items-start xl:items-center justify-between gap-5">
+          <div className="space-y-1.5 min-w-0 max-w-2xl">
             <h1 className="text-xl sm:text-2xl font-archivo font-bold tracking-tight text-slate-900 dark:text-[#E2E4E9]">
               Document Projects
             </h1>
-            <p className="text-xs sm:text-sm text-slate-500 dark:text-[#9E9E9E] max-w-2xl leading-relaxed">
+            <p className="text-xs sm:text-sm text-slate-500 dark:text-[#9E9E9E] leading-relaxed">
               Co-author seminar reports, assignments, project thesis, slides, and research papers with real-time compilation and SyncTeX.
             </p>
           </div>
 
-          <div className="flex flex-col sm:flex-row items-center gap-2.5 w-full sm:w-auto shrink-0">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 w-full xl:w-auto">
             <Button
               onClick={() => setPdfModalOpen(true)}
               size="lg"
@@ -173,6 +177,25 @@ function DashboardContent() {
               <span className="text-[9px] font-mono font-bold uppercase px-1.5 py-0.2 rounded bg-white dark:bg-[#141519] text-slate-500 dark:text-[#9E9E9E] border border-slate-200 dark:border-[#282A30] tracking-wider">
                 BETA
               </span>
+            </Button>
+
+            <Button
+              onClick={() => setZipModalOpen(true)}
+              size="lg"
+              className="h-9 sm:h-9 w-full sm:w-auto px-4 bg-slate-100 hover:bg-slate-200 dark:bg-[#1A1C22] dark:hover:bg-[#22242C] text-slate-800 dark:text-[#E2E4E9] font-mono font-medium border border-slate-200 dark:border-[#282A30] rounded-lg shrink-0 text-xs justify-center cursor-pointer transition-all flex items-center gap-2"
+            >
+              <FileArchive className="w-3.5 h-3.5 text-emerald-600 dark:text-[#E2E4E9]" />
+              <span>Import ZIP</span>
+            </Button>
+
+            <Button
+              onClick={() => downloadAllProjectsZip()}
+              size="lg"
+              disabled={ownedProjects.length + sharedProjects.length === 0}
+              className="h-9 sm:h-9 w-full sm:w-auto px-4 bg-slate-100 hover:bg-slate-200 dark:bg-[#1A1C22] dark:hover:bg-[#22242C] text-slate-800 dark:text-[#E2E4E9] font-mono font-medium border border-slate-200 dark:border-[#282A30] rounded-lg shrink-0 text-xs justify-center cursor-pointer transition-all flex items-center gap-2 disabled:opacity-50"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-600 dark:text-[#E2E4E9]" />
+              <span>Export all projects</span>
             </Button>
 
             <Button
@@ -188,7 +211,7 @@ function DashboardContent() {
       </div>
 
       {/* Quick Action Creation Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         {/* PDF to LaTeX Card */}
         <div
           onClick={() => setPdfModalOpen(true)}
@@ -219,6 +242,30 @@ function DashboardContent() {
           </div>
           <div className="pt-4 mt-3 border-t border-slate-100 dark:border-[#282A30] flex items-center justify-between text-xs font-mono font-medium text-slate-800 dark:text-[#E2E4E9]">
             <span>Import PDF & Convert</span>
+            <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+          </div>
+        </div>
+
+        {/* Import from ZIP Card */}
+        <div
+          onClick={() => setZipModalOpen(true)}
+          className="group relative p-5 rounded-xl border border-slate-200 dark:border-[#282A30] bg-white dark:bg-[#141519] hover:bg-slate-50 dark:hover:bg-[#1A1C22] hover:border-slate-300 dark:hover:border-[#383B46] transition-all cursor-pointer flex flex-col justify-between overflow-hidden shadow-sm dark:shadow-none"
+        >
+          <div className="space-y-3">
+            <div className="p-2.5 rounded-lg bg-slate-100 dark:bg-[#1A1C22] border border-slate-200 dark:border-[#282A30] text-slate-800 dark:text-[#E2E4E9] group-hover:bg-slate-200 dark:group-hover:bg-[#22242C] transition-all w-fit">
+              <FileArchive className="w-4 h-4 stroke-[2]" />
+            </div>
+            <div>
+              <h3 className="text-sm font-archivo font-bold text-slate-900 dark:text-[#E2E4E9] transition-colors">
+                Import from ZIP
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-[#9E9E9E] leading-relaxed mt-1">
+                Upload a .zip of your LaTeX sources and images to continue working on it as a new project.
+              </p>
+            </div>
+          </div>
+          <div className="pt-4 mt-3 border-t border-slate-100 dark:border-[#282A30] flex items-center justify-between text-xs font-mono font-medium text-slate-800 dark:text-[#E2E4E9]">
+            <span>Upload ZIP Archive</span>
             <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
           </div>
         </div>
@@ -404,6 +451,18 @@ function DashboardContent() {
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
+                                downloadProjectZip(project.id, project.name);
+                              }}
+                              className="p-1 text-slate-400 dark:text-[#62666D] hover:text-emerald-600 dark:hover:text-[#10B981] transition-colors cursor-pointer"
+                              title="Export (.zip)"
+                              aria-label={`Export ${project.name} (.zip)`}
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
                                 setDeleteConfirmProj(project);
                               }}
                               className="p-1 text-slate-400 dark:text-[#62666D] hover:text-red-500 dark:hover:text-[#FF8585] transition-colors cursor-pointer"
@@ -466,6 +525,18 @@ function DashboardContent() {
                             <span className="px-2 py-0.5 rounded text-[10px] font-medium font-mono bg-slate-100 dark:bg-[#1E2026] text-slate-600 dark:text-[#9E9E9E] border border-slate-200 dark:border-[#282A30] uppercase">
                               {project.role}
                             </span>
+                            <button
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                downloadProjectZip(project.id, project.name);
+                              }}
+                              className="p-1 text-slate-400 dark:text-[#62666D] hover:text-emerald-600 dark:hover:text-[#10B981] transition-colors cursor-pointer"
+                              title="Export (.zip)"
+                              aria-label={`Export ${project.name} (.zip)`}
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
                             <button
                               onClick={(e) => {
                                 e.preventDefault();
@@ -627,6 +698,18 @@ function DashboardContent() {
           </div>
         </div>
       )}
+
+      {/* ZIP import (creates a new project) */}
+      <ImportZipDialog
+        open={zipModalOpen}
+        onOpenChange={setZipModalOpen}
+        onSuccess={(id) => {
+          utils.projects.invalidate();
+          router.push(`/editor/${id}`);
+        }}
+        // An archive with one folder per project: the dialog lists them; just refresh the grid.
+        onMultipleImported={() => utils.projects.invalidate()}
+      />
 
       {/* PDF → LaTeX import (creates a new project) */}
       <ImportPdfDialog

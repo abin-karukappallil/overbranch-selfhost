@@ -16,7 +16,7 @@ export function LandingHero({ initialIsAuthenticated }: LandingHeroProps = {}) {
     : (isPending && initialIsAuthenticated !== undefined ? initialIsAuthenticated : Boolean(session?.user));
 
   return (
-    <section id="product" className="relative min-h-screen bg-[#00CC68] text-black flex flex-col justify-between pt-28 pb-10 px-4 sm:px-8 lg:px-12 select-none overflow-hidden">
+    <section id="product" className="relative min-h-screen bg-[#00CC68] text-black flex flex-col justify-between pt-28 pb-10 px-4 sm:px-8 lg:px-12 select-none border-b-2 border-black overflow-hidden">
       {/* Top / Main Hero Content */}
       <div className="relative z-10 flex-1 flex flex-col justify-center items-center text-center my-auto">
     
@@ -60,7 +60,7 @@ export function LandingHero({ initialIsAuthenticated }: LandingHeroProps = {}) {
           )}
 
           <a
-            href="https://github.com/abin-karukappallil/overbranch-selfhost"
+            href="https://github.com/abin-karukappallil/overbranch"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-3 bg-white text-black px-7 py-4 rounded-full font-mono text-sm sm:text-base font-bold uppercase tracking-wider border-2 border-black hover:bg-black hover:text-white shadow-[5px_5px_0px_0px_#000000] hover:translate-x-0.5 hover:translate-y-0.5 hover:shadow-none transition-all duration-150"

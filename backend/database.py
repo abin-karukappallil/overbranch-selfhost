@@ -126,6 +126,12 @@ def init_sqlite_schema():
         created_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
 
+    CREATE TABLE IF NOT EXISTS collab_doc_state (
+        project_id TEXT PRIMARY KEY,
+        state_b64 TEXT NOT NULL,
+        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+    );
+
     CREATE TABLE IF NOT EXISTS comments (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,

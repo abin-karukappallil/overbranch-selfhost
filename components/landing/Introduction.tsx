@@ -38,7 +38,7 @@ export function LandingIntroduction() {
               <span className="text-[#00CC68] font-bold">Beta Note:</span>
               <span>OverBranch is actively in beta and continuously improving. If you encounter bugs or glitches, please</span>
               <a
-                href="https://github.com/abin-karukappallil/overbranch-selfhost/issues"
+                href="https://github.com/abin-karukappallil/overbranch/issues"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-[#00CC68] hover:underline font-bold inline-flex items-center gap-1"

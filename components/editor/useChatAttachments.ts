@@ -18,7 +18,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { authFetch } from "@/lib/api-client";
 
-const BACKEND_URL = "http://localhost:8000";
+const BACKEND_URL = (
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  process.env.BACKEND_URL ||
+  "http://localhost:8000"
+).replace(/\/$/, "");
 
 export const ATTACHMENT_ACCEPT =
   ".pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.tex,.bib,.csv,.json,application/pdf,image/png,image/jpeg,image/webp,text/*";

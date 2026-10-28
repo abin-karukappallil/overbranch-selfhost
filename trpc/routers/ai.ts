@@ -2,7 +2,11 @@ import { router, protectedProcedure } from '../init';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 
-const BACKEND_URL = "http://localhost:8000";
+const BACKEND_URL = (
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  process.env.BACKEND_URL ||
+  "http://localhost:8000"
+).replace(/\/$/, "");
 
 export interface ModelOption {
   id: string;
@@ -15,6 +19,7 @@ export interface ProviderGroup {
   models: ModelOption[];
 }
 
+// Gateway models only: every request goes through the Web2API gateway chain.
 const DEFAULT_PROVIDER_GROUPS: ProviderGroup[] = [
   {
     name: "Gemini Web2API",
@@ -24,15 +29,6 @@ const DEFAULT_PROVIDER_GROUPS: ProviderGroup[] = [
       { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", default: false },
       { id: "gemini-3.5-flash-thinking", label: "Gemini 3.5 Flash Thinking", default: false },
       { id: "gemini-3.5-flash-thinking-lite", label: "Gemini 3.5 Flash Thinking Lite", default: false },
-    ],
-  },
-  {
-    name: "OpenRouter",
-    models: [
-      { id: "minimax/minimax-01", label: "MiniMax M3 (Text-01)", default: false },
-      { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra Free", default: false },
-      { id: "minimax/minimax-m3:free", label: "Minimax 3 Free", default: false },
-      { id: "deepseek/deepseek-v4-flash:free", label: "DeepSeek V4 Flash Free", default: false },
     ],
   },
 ];

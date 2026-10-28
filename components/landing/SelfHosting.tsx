@@ -6,10 +6,10 @@ import { Check, Copy, Terminal } from "lucide-react";
 export function LandingSelfHosting() {
   const [copied, setCopied] = useState(false);
 
-  const commandText = `$ curl -fsSL https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/install.sh | bash\n$ OverBranch Running\n  http://localhost:3000 // ONLINE`;
+  const commandText = `$ git clone https://github.com/abin-karukappallil/overbranch.git\n$ cd overbranch \n //Add .env using .env.example \n$ docker compose up -d --build \n$ OverBranch Running\n  http://localhost:3000 // ONLINE`;
 
   const copyCommand = () => {
-    navigator.clipboard.writeText("curl -fsSL https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/install.sh | bash");
+    navigator.clipboard.writeText("git clone https://github.com/abin-karukappallil/overbranch.git && cd overbranch && docker compose up -d");
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

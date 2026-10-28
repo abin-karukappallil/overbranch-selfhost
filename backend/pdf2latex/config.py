@@ -10,6 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _repo_root = Path(__file__).resolve().parent.parent.parent
+_root_env = _repo_root / ".env"
+if _root_env.exists():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=_root_env, override=False)
+    except ImportError:
+        pass
 
 
 def _env_int(name: str, default: int) -> int:
@@ -69,7 +76,7 @@ def get_settings() -> Pdf2LatexSettings:
         page_retries=max(0, _env_int("PDF2LATEX_PAGE_RETRIES", 0)),
         max_compile_repairs=max(0, _env_int("PDF2LATEX_MAX_COMPILE_REPAIRS", 3)),
         max_file_mb=max(1, _env_int("PDF2LATEX_MAX_FILE_MB", 50)),
-        max_pages=max(1, _env_int("PDF2LATEX_MAX_PAGES", 50)),
+        max_pages=max(1, _env_int("PDF2LATEX_MAX_PAGES", 100)),
         # Reported target for the visual score. It is a diagnostic, not a gate: full-page SSIM
         # cannot tell a faithful reflow from a page with text missing (see verify.compare_pages).
         sim_threshold=_env_float("PDF2LATEX_SIM_THRESHOLD", 0.85),

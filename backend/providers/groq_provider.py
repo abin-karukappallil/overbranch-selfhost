@@ -113,7 +113,7 @@ class GroqProvider(LLMProvider):
 
         if not candidates:
             raise LLMProviderError(
-                "No Groq API keys configured. Provide one in settings or use local Gemini Web2API.",
+                "No Groq API keys configured. Provide one in settings or set GROQ_API_KEY in .env.",
                 provider="Groq",
             )
 

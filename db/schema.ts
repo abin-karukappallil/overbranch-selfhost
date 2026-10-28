@@ -186,3 +186,13 @@ export type Comment = typeof comments.$inferSelect;
 export type Template = typeof templates.$inferSelect;
 export type LatexDocument = typeof latexDocuments.$inferSelect;
 export type DocumentVector = typeof documentVectors.$inferSelect;
+
+export const collabDocState = sqliteTable("collab_doc_state", {
+  projectId: text("project_id").primaryKey().references(() => projects.id, { onDelete: "cascade" }),
+  stateB64: text("state_b64").notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date())
+});
+
+export type CollabDocState = typeof collabDocState.$inferSelect;
+export type GuestSession = typeof guestSessions.$inferSelect;
+export type GuestProject = typeof guestProjects.$inferSelect;

@@ -23,7 +23,7 @@ export function LandingOpenSource() {
 
         <div className="pt-6">
           <a
-            href="https://github.com/abin-karukappallil/overbranch-selfhost"
+            href="https://github.com/abin-karukappallil/overbranch"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-3 bg-[#00CC68] text-black font-mono text-lg sm:text-2xl font-bold uppercase tracking-wider px-8 py-5 rounded-full border-2 border-black shadow-[6px_6px_0px_0px_#FFFFFF] hover:bg-white hover:text-black hover:translate-x-1 hover:translate-y-1 transition-all duration-150"

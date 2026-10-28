@@ -90,6 +90,11 @@ app.include_router(file_analyzer.router, prefix="/api")
 app.include_router(pdf_convert_router)
 app.include_router(agent_router)
 
+from routes import project_import
+from routes import project_export
+app.include_router(project_import.router, prefix='/api/projects')
+app.include_router(project_export.router, prefix='/api/projects')
+
 
 class FileAsset(BaseModel):
     filename: str
@@ -103,6 +108,8 @@ class CompileRequest(BaseModel):
     engine: str = "latexmk"
     images: Optional[List[FileAsset]] = []
     files: Optional[List[FileAsset]] = []
+    active_file: Optional[str] = None
+    active_text: Optional[str] = None
 
 
 @app.get("/api/models")
@@ -186,6 +193,8 @@ async def compile_endpoint(
             images=images_dict,
             files=files_dict,
             project_id=req.project_id,
+            active_file=req.active_file,
+            active_text=req.active_text,
         )
         return result
     except CompileQueueFullError as qfe:
@@ -235,6 +244,8 @@ async def synctex_backward_endpoint(
 
     res = backward_lookup(
         project_id=req.project_id,
+            active_file=req.active_file,
+            active_text=req.active_text,
         page=req.page,
         x=req.x,
         y=req.y,
@@ -269,6 +280,8 @@ async def synctex_forward_endpoint(
 
     res = forward_lookup(
         project_id=req.project_id,
+            active_file=req.active_file,
+            active_text=req.active_text,
         file_path=req.file,
         line=req.line,
         column=req.column or 1,

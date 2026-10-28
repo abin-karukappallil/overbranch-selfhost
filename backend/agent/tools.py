@@ -913,6 +913,18 @@ def _convert_attached_pdf(args: Dict[str, Any], workspace: "ShadowWorkspace") ->
     existing = jobs.active_job_for(owner)
     if existing:
         return {"error": "A PDF conversion is already running for this user.", "job_id": existing["job_id"]}
+    if user_ctx.get("is_guest"):
+        from services.guest_quota import check_guest_conversion_quota, consume_guest_conversion
+        from project_storage import get_supabase_client
+        sid = owner.replace("guest_", "", 1)
+        res = get_supabase_client().table("guest_sessions").select("*").eq("id", sid).limit(1).execute()
+        if not res.data:
+            return {"error": "Guest session not found."}
+        allowed, _used, _resets, reason = check_guest_conversion_quota(res.data[0], "")
+        if not allowed:
+            return {"error": reason or "Guest conversion limit reached."}
+        consume_guest_conversion(sid)
+
     state = start_job(owner, bool(user_ctx.get("is_guest")), project_id,
                       att.get("filename") or "document.pdf", data, page_count, overwrite=False,
                       mode="editable")

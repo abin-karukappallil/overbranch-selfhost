@@ -18,7 +18,7 @@ import { authClient } from "@/lib/auth-client";
 import { authFetch } from "@/lib/api-client";
 import { ImportPdfDialog } from "@/components/pdf-import/ImportPdfDialog";
 
-const BACKEND_URL = "http://localhost:8000";
+const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL || process.env.BACKEND_URL || "http://localhost:8000").replace(/\/$/, "");
 
 export default function ConvertPage() {
   const router = useRouter();
@@ -98,7 +98,7 @@ export default function ConvertPage() {
 
         <div className="flex items-center gap-3">
           <a
-            href="https://github.com/abin-karukappallil/overbranch-selfhost/issues"
+            href="https://github.com/abin-karukappallil/overbranch/issues"
             target="_blank"
             rel="noopener noreferrer"
             className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-zinc-800 bg-zinc-900/60 hover:bg-zinc-900 text-[11px] text-zinc-400 hover:text-amber-300 font-mono transition-colors"
@@ -142,7 +142,7 @@ export default function ConvertPage() {
             <span className="text-indigo-400 font-bold">⚠️ Beta Feature:</span>
             <span>Encountering bugs or formatting issues? Please</span>
             <a
-              href="https://github.com/abin-karukappallil/overbranch-selfhost/issues"
+              href="https://github.com/abin-karukappallil/overbranch/issues"
               target="_blank"
               rel="noopener noreferrer"
               className="text-indigo-400 underline font-bold"

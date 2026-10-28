@@ -71,6 +71,7 @@ import { PresentationView } from "@/components/editor/PresentationView";
 import { ModelSelector, type ProviderGroup } from "@/components/editor/ModelSelector";
 import type { SyncTeXForwardResult, SyncState } from "@/types/sync";
 import { ProjectFilesPanel } from "@/components/editor/ProjectFilesPanel";
+import { useProjectFiles } from "@/components/editor/useProjectFiles";
 import { ImportPdfDialog } from "@/components/pdf-import/ImportPdfDialog";
 import { InlineDiffEditor, EditItem } from "@/components/editor/InlineDiffEditor";
 import { EditorSearchBar } from "@/components/editor/EditorSearchBar";
@@ -109,14 +110,22 @@ import {
 import { resolveEditsOnServer } from "@/lib/latex-validate";
 import { ChatAttachments } from "@/components/editor/ChatAttachments";
 import { MentionChips } from "@/components/editor/MentionChips";
-import { addMention, makeMention, removeMention, type MentionRef } from "@/lib/mentions";
+import { addMention, makeFileMention, makeMention, removeMention, type MentionRef } from "@/lib/mentions";
+import { FileMentionPopover } from "@/components/editor/FileMentionPopover";
 import { blockStats, buildReviewBlocks, placeBlocks, type ReviewHunk } from "@/lib/inline-diff";
 import { InlineDiffController, type InlineDiffState } from "@/lib/inline-diff-monaco";
 import { ATTACHMENT_ACCEPT, useChatAttachments } from "@/components/editor/useChatAttachments";
 
 const SHOW_EDIT_DEBUG = process.env.NODE_ENV !== "production";
 
-const BACKEND_URL = "http://localhost:8000";
+// The only thing a user is told when the model gateways are down (the backend cycles its whole
+// gateway chain before it gives up, so this means "try again", never "your document is broken").
+const MODEL_OUTAGE_MESSAGE = "Model outage — please retry.";
+// How long the agent stream may be completely silent before the client gives up on it. The backend
+// sends a keep-alive every 3s, so a live run never gets near this.
+const AGENT_IDLE_TIMEOUT_MS = 60_000;
+
+const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL || process.env.BACKEND_URL || "http://localhost:8000").replace(/\/$/, "");
 
 interface EditorLayoutProps {
   projectId?: string;
@@ -300,6 +309,25 @@ export function repairSharedEditHistoryIds<T extends { historyEntryId?: string }
   );
 }
 
+/**
+ * Non-error notes the compiler attaches to a SUCCESSFUL compile: `notices` (strings) and
+ * diagnostics of type "FONT" (severity "warning"), de-duplicated.
+ */
+function collectCompileNotices(body: any): string[] {
+  const out: string[] = [];
+  const add = (v: unknown) => {
+    const t = typeof v === "string" ? v.trim() : "";
+    if (t && !out.includes(t)) out.push(t);
+  };
+  if (Array.isArray(body?.notices)) body.notices.forEach(add);
+  if (Array.isArray(body?.diagnostics)) {
+    for (const d of body.diagnostics) {
+      if (d && d.type === "FONT") add(d.message);
+    }
+  }
+  return out;
+}
+
 export function EditorLayout({
   projectId,
   isGuest: propIsGuest,
@@ -375,6 +403,23 @@ export function EditorLayout({
   // every time the user switches file (the collaboration remote-change handler).
   const activeFilePathRef = useRef(activeFilePath);
   activeFilePathRef.current = activeFilePath;
+  // The file whose text the editor currently holds. `activeFilePath` flips the moment a tab is
+  // chosen, but the editor keeps showing the PREVIOUS file until the new one's content arrives;
+  // a change reported in that window used to be saved under the new path, overwriting it with
+  // the old file's text (main.tex ended up holding details.tex). Saves are gated on this.
+  const loadedFilePathRef = useRef<string | null>(null);
+  // Monaco commands (Ctrl+S) are registered once at mount; they must call the CURRENT render's
+  // save/compile, not the first render's (whose activeFilePath is "main.tex" forever).
+  const editorActionsRef = useRef<{
+    save: (code: string, showToast?: boolean) => Promise<void>;
+    compile: (code?: string) => Promise<void>;
+  } | null>(null);
+  // Main-file auto-open bookkeeping (see the effect after handleSelectFile).
+  const userPickedFileRef = useRef(false);
+  const autoOpeningMainRef = useRef(false);
+  const autoOpenedFileRef = useRef<string | null>(null);
+  const mainFileAppliedForRef = useRef<string | null>(null);
+  const prevActiveFilePathRef = useRef(activeFilePath);
   // The backend's authoritative healed+validated buffer for the current proposal.
   const authoritativeDocRef = useRef<AuthoritativeDoc | null>(null);
 
@@ -458,7 +503,6 @@ export function EditorLayout({
   const [isFileAnalyzerOpen, setIsFileAnalyzerOpen] = useState<boolean>(false);
   const [isApiSettingsOpen, setIsApiSettingsOpen] = useState<boolean>(false);
   const [activeModelName, setActiveModelName] = useState<string>("gemini-3.7-flash");
-  const [fallbackModelNotice, setFallbackModelNotice] = useState<string | null>(null);
   const [agentProgressSteps, setAgentProgressSteps] = useState<{ step: string; message: string; icon: string }[]>([]);
   const [filesRefreshTrigger, setFilesRefreshTrigger] = useState<number>(0);
   const [pdfImportOpen, setPdfImportOpen] = useState(false);
@@ -954,7 +998,7 @@ export function EditorLayout({
   );
 
   const isViewer = projectDetail?.role === "Viewer";
-  const isGuestMode = false;
+  const isGuestMode = propIsGuest || !!(projectDetail as any)?.isGuest;
 
   // ─── Realtime collaboration (Yjs CRDT over the backend's /ws/collab) ──────
   // The session identity comes from the existing Better-Auth client; nothing
@@ -1018,7 +1062,28 @@ export function EditorLayout({
   const collabBound = collab.bound;
   const collabBoundRef = useRef(false);
   collabBoundRef.current = collabBound;
-  const guestTimeLeft = "";
+  const guestExpiresAt = propExpiresAt || (projectDetail as any)?.expiresAt;
+  const [guestTimeLeft, setGuestTimeLeft] = useState<string>("");
+
+  useEffect(() => {
+    if (!isGuestMode || !guestExpiresAt) return;
+    const calculate = () => {
+      const diff = new Date(guestExpiresAt).getTime() - Date.now();
+      if (diff <= 0) {
+        setGuestTimeLeft("Expired");
+        return;
+      }
+      const hours = Math.floor(diff / (1000 * 60 * 60));
+      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+      setGuestTimeLeft(
+        `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`
+      );
+    };
+    calculate();
+    const interval = setInterval(calculate, 1000);
+    return () => clearInterval(interval);
+  }, [isGuestMode, guestExpiresAt]);
 
   // No mock messages — only real conversation from API interactions
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -1066,7 +1131,6 @@ export function EditorLayout({
     setDiffData(null);
     setDiffEditsList([]);
     pendingEditsMsgIdRef.current = null;
-    setFallbackModelNotice(null);
     setAgentProgressSteps([]);
     try {
       localStorage.removeItem(`overbranch_${projStorageKey}_chat_messages`);
@@ -1082,7 +1146,6 @@ export function EditorLayout({
       setDiffData(null);
       setDiffEditsList([]);
       pendingEditsMsgIdRef.current = null;
-      setFallbackModelNotice(null);
       setAgentProgressSteps([]);
       try {
         localStorage.removeItem(`overbranch_${projStorageKey}_chat_messages`);
@@ -1155,8 +1218,52 @@ export function EditorLayout({
     }
   };
 
+  // @file mentions: the two chat textareas (as state, so the popovers re-render
+  // once the node exists) and whether either popover is showing.
+  const [desktopChatTextarea, setDesktopChatTextarea] = useState<HTMLTextAreaElement | null>(null);
+  const [mobileChatTextarea, setMobileChatTextarea] = useState<HTMLTextAreaElement | null>(null);
+  const mentionOpenRef = useRef({ desktop: false, mobile: false });
+  const setDesktopMentionOpen = useCallback((open: boolean) => { mentionOpenRef.current.desktop = open; }, []);
+  const setMobileMentionOpen = useCallback((open: boolean) => { mentionOpenRef.current.mobile = open; }, []);
+
+  /** Swap the `@query` the user typed for `@basename ` and pin the whole file to the message. */
+  const handleInsertMention = useCallback((file: string, triggerIndex: number, queryLength: number) => {
+    const basename = file.slice(file.lastIndexOf("/") + 1);
+    const inserted = `@${basename} `;
+    const caretAfter = triggerIndex + inserted.length;
+    setChatInput((prev) => prev.slice(0, triggerIndex) + inserted + prev.slice(triggerIndex + 1 + queryLength));
+
+    const result = addMention(mentionsRef.current, makeFileMention(file));
+    if (result.error) {
+      toast.error(result.error);
+    } else {
+      mentionsRef.current = result.list;
+      setMentions(result.list);
+    }
+
+    // Wait for React to write the new value, then put the caret after the token.
+    const active = document.activeElement;
+    const target = active === desktopChatTextarea || active === mobileChatTextarea
+      ? (active as HTMLTextAreaElement)
+      : desktopChatTextarea ?? mobileChatTextarea;
+    requestAnimationFrame(() => {
+      if (!target) return;
+      target.focus();
+      target.setSelectionRange(caretAfter, caretAfter);
+    });
+  }, [desktopChatTextarea, mobileChatTextarea]);
+
   /** One Enter-key policy for both chat boxes (see lib/chat-input.ts). */
   const handleChatKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // The @file list owns these keys while it is open (the popover also swallows
+    // them in the capture phase; this keeps Enter from sending if it ever doesn't).
+    if (
+      (mentionOpenRef.current.desktop || mentionOpenRef.current.mobile) &&
+      ["ArrowUp", "ArrowDown", "Enter", "Tab", "Escape"].includes(e.key)
+    ) {
+      e.preventDefault();
+      return;
+    }
     if (!shouldSendOnEnter({
       key: e.key,
       shiftKey: e.shiftKey,
@@ -1436,10 +1543,13 @@ export function EditorLayout({
     // The duplicate-change guard compares against the last edit it saw; a new
     // file starts with no history of its own.
     lastCodeChangeRef.current = null;
+    // A click (or any caller but the main-file auto-open below) is an explicit choice.
+    if (!autoOpeningMainRef.current) userPickedFileRef.current = true;
     setActiveFilePath(filePath);
     // Instant cache lookup for 0ms transition
     const cached = fileContentCacheRef.current.get(filePath);
     if (cached) {
+      loadedFilePathRef.current = filePath;
       setCode(cached.content);
       setSaveStatus("saved");
     } else {
@@ -1447,6 +1557,7 @@ export function EditorLayout({
       try {
         const saved = localStorage.getItem(savedKey);
         if (saved !== null) {
+          loadedFilePathRef.current = filePath;
           setCode(saved);
           setSaveStatus("saved");
           fileContentCacheRef.current.set(filePath, { content: saved, timestamp: Date.now() });
@@ -1455,6 +1566,35 @@ export function EditorLayout({
     }
   }, [projectId]);
 
+  // Open the project's real MAIN document. An imported project can keep it in a sub-folder
+  // (thesis/thesis.tex) with no root main.tex, while the editor starts on "main.tex". Once the
+  // file list first reports `main_file`, switch to it - but only if the user has not already
+  // chosen a file (a click, a SyncTeX jump, a reverse-sync target all count as a choice). The
+  // ref makes this run once per project load, so it can never fight the user or loop.
+  const { mainFile: projectMainFile } = useProjectFiles(projectId || "");
+  useEffect(() => {
+    if (activeFilePath !== prevActiveFilePathRef.current) {
+      prevActiveFilePathRef.current = activeFilePath;
+      if (autoOpenedFileRef.current === activeFilePath) autoOpenedFileRef.current = null;
+      else userPickedFileRef.current = true; // moved by something other than the auto-open
+    }
+  }, [activeFilePath]);
+  useEffect(() => {
+    if (!projectId || !projectMainFile) return;
+    if (mainFileAppliedForRef.current === projectId) return;
+    mainFileAppliedForRef.current = projectId;
+    if (userPickedFileRef.current) return;
+    if (activeFilePathRef.current !== "main.tex") return;
+    if (projectMainFile === "main.tex") return;
+    autoOpenedFileRef.current = projectMainFile;
+    autoOpeningMainRef.current = true;
+    try {
+      handleSelectFile(projectMainFile);
+    } finally {
+      autoOpeningMainRef.current = false;
+    }
+  }, [projectId, projectMainFile, handleSelectFile]);
+
   // 1. Load saved code from backend API (Supabase DB + Disk) or LocalStorage when activeFilePath or projectId changes
   useEffect(() => {
     let isCancelled = false;
@@ -1462,12 +1602,17 @@ export function EditorLayout({
     // Fast synchronous cache hit
     const cached = fileContentCacheRef.current.get(activeFilePath);
     if (cached) {
+      loadedFilePathRef.current = activeFilePath;
       setCode(cached.content);
       setSaveStatus("saved");
     } else {
+      // Nothing local for this file yet: until the server copy lands the editor still shows
+      // the previous file, so no change may be saved under this path.
+      loadedFilePathRef.current = null;
       try {
         const savedCode = localStorage.getItem(storageKey);
         if (savedCode !== null) {
+          loadedFilePathRef.current = activeFilePath;
           setCode(savedCode);
           setSaveStatus("saved");
           fileContentCacheRef.current.set(activeFilePath, { content: savedCode, timestamp: Date.now() });
@@ -1495,12 +1640,18 @@ export function EditorLayout({
         if (res.ok && !isCancelled) {
           const data = await res.json();
           if (data.raw_code !== undefined) {
+            loadedFilePathRef.current = activeFilePath;
             setCode(data.raw_code);
             setSaveStatus("saved");
             fileContentCacheRef.current.set(activeFilePath, { content: data.raw_code, timestamp: Date.now() });
             localStorage.setItem(storageKey, data.raw_code);
             return;
           }
+          // The server answered but holds no text for this file: it is genuinely empty.
+          loadedFilePathRef.current = activeFilePath;
+          setCode("");
+          setSaveStatus("saved");
+          return;
         }
       } catch (err) {
         console.warn("Backend load failed, falling back to LocalStorage:", err);
@@ -1511,6 +1662,7 @@ export function EditorLayout({
         try {
           const savedCode = localStorage.getItem(storageKey);
           if (savedCode !== null) {
+            loadedFilePathRef.current = activeFilePath;
             setCode(savedCode);
             setSaveStatus("saved");
           }
@@ -1527,6 +1679,8 @@ export function EditorLayout({
   // 2. Save Document function (Saves to Supabase latex_documents DB, Local Disk, and syncs Qdrant vectors)
   const saveDocument = async (newCode: string, showToast = true) => {
     const activeProj = projectId || "proj-1";
+    // See loadedFilePathRef: never write text that was not loaded for this file into it.
+    if (loadedFilePathRef.current !== activeFilePath) return;
     fileContentCacheRef.current.set(activeFilePath, { content: newCode, timestamp: Date.now() });
 
     // While a collaboration room is bound, the *server* persists the document
@@ -1583,6 +1737,9 @@ export function EditorLayout({
    */
   const handleCodeChange = (newCode: string | undefined) => {
     const updated = newCode ?? "";
+    // Text that belongs to another file (the editor has not caught up with a tab switch, or a
+    // child reported a stale snapshot) must never be cached or saved under this file's path.
+    if (loadedFilePathRef.current !== activeFilePath) return;
     const signature = `${activeFilePath}\u0000${updated}`;
     if (lastCodeChangeRef.current === signature) return;
     lastCodeChangeRef.current = signature;
@@ -1846,8 +2003,8 @@ export function EditorLayout({
     // Register Ctrl+S / Cmd+S save shortcut inside Monaco Editor
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       const currentVal = editor.getValue();
-      saveDocument(currentVal, true);
-      handleCompile(currentVal);
+      editorActionsRef.current?.save(currentVal, true);
+      editorActionsRef.current?.compile(currentVal);
     });
 
     // Ctrl/Cmd+M: pin the selection to the chat message (both editors).
@@ -1961,6 +2118,11 @@ export function EditorLayout({
               latex_code: targetCode,
               project_id: projectId || "",
               engine: engine,
+              // Compile the PROJECT's main document, with the open tab's text
+              // overlaid at its own path — so an imported multi-file project
+              // builds the real main.tex, not whatever file happens to be open.
+              active_file: activeFilePath || "main.tex",
+              active_text: targetCode,
             }),
           });
           const data = await res.json().catch(() => null);
@@ -1977,6 +2139,16 @@ export function EditorLayout({
           // complaints in nonstopmode are not surfaced as a warning band.
           toast.dismiss(busyToastId);
           setPdfBase64(outcome.body.pdf_base64);
+          // Server-side font substitution is information, never an error: the PDF is already
+          // showing; this only says which fonts were swapped (and how to keep the originals).
+          const compileNotices = collectCompileNotices(outcome.body);
+          if (compileNotices.length > 0) {
+            toast.info("Fonts substituted", {
+              id: "compile-font-notice",
+              description: compileNotices.join(" "),
+              duration: 12000,
+            });
+          }
           return;
         }
         if (outcome.kind === "busy") {
@@ -2008,6 +2180,8 @@ export function EditorLayout({
       setIsCompiling(false);
     }
   };
+
+  editorActionsRef.current = { save: saveDocument, compile: handleCompile };
 
   const sendPromptMessage = async (customPrompt?: string, modeOverride?: ChatMode) => {
     // "Ask AI to Fix" must run in Edit mode whatever the toggle says: in Ask mode the
@@ -2054,16 +2228,26 @@ export function EditorLayout({
       // their chip or by clearing the chat.
     }
     setIsAgentThinking(true);
-    setFallbackModelNotice(null);
     setAgentProgressSteps([]);
 
     abortControllerRef.current = new AbortController();
     const reqId = `chat-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     activeRequestIdRef.current = reqId;
 
-    // Runs that read attached papers take longer (600s with attachments, 300s otherwise).
-    const timeoutMs = hasAttachments ? 600000 : 300000;
-    const timeoutId = setTimeout(() => abortControllerRef.current?.abort(), timeoutMs);
+    // Liveness, not a deadline: the backend sends bytes (progress events or a ": keep-alive"
+    // comment every 3s) for as long as the run is alive, so a slow run that keeps talking is
+    // never aborted. Only a connection that has gone silent for AGENT_IDLE_TIMEOUT_MS is.
+    const requestController = abortControllerRef.current;
+    let idleTripped = false;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const armIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        idleTripped = true;
+        requestController.abort();
+      }, AGENT_IDLE_TIMEOUT_MS);
+    };
+    armIdleTimer();
 
     try {
       // Check for user-provided API keys
@@ -2116,9 +2300,13 @@ export function EditorLayout({
           api_keys: customApiKeys || undefined,
         }),
       });
-      clearTimeout(timeoutId);
+      armIdleTimer();
 
       if (!response.ok) {
+        if (response.status >= 500) {
+          console.error("Agent request failed with status", response.status);
+          throw new Error(MODEL_OUTAGE_MESSAGE);
+        }
         if (response.status === 413) {
           throw new Error("The uploaded file is too large for the server. Try a smaller PDF or ask about the document without attaching it.");
         }
@@ -2265,9 +2453,9 @@ export function EditorLayout({
                   console.log("AI Agent generation cleanly stopped by user:", parsed);
                   return;
                 } else if (currentEventType === "error" || (parsed.type === "error" && (parsed.message || parsed.detail || parsed.error))) {
-                  const msg = parsed.message || parsed.detail || parsed.error || "The AI agent hit an error processing your request.";
-                  const detail = parsed.detail && parsed.detail !== msg ? ` (${parsed.detail})` : "";
-                  sseError = new Error(`${msg}${detail}`);
+                  // The detail (provider, status, stack) belongs in the console, not in front of the user.
+                  console.error("Agent stream error:", parsed);
+                  sseError = new Error(MODEL_OUTAGE_MESSAGE);
                 }
               } catch {
                 // Non-JSON or fragmented data chunk: safely skip
@@ -2285,6 +2473,7 @@ export function EditorLayout({
           if (sseError) break;
           const { done, value } = await reader.read();
           if (done) break;
+          armIdleTimer(); // any bytes, keep-alive comments included, prove the run is alive
 
           buffer += decoder.decode(value, { stream: true });
 
@@ -2321,11 +2510,6 @@ export function EditorLayout({
       const assistantTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 
-
-      if (data.is_fallback && data.fallback_notice) {
-        setFallbackModelNotice(data.fallback_notice);
-        toast.warning(data.fallback_notice, { duration: 6000 });
-      }
 
       const rawExplanation = data.explanation || "I have processed your LaTeX request.";
       const responseText = sanitizeChunkReferences(rawExplanation);
@@ -2378,7 +2562,7 @@ export function EditorLayout({
         {
           id: assistantMsgId,
           sender: "assistant",
-          text: responseText + (data.is_fallback ? `\n\n*(⚠️ Fallback Model Used: ${data.model_used})*` : ""),
+          text: responseText,
           time: assistantTime,
           mode: effectiveMode,
           edits: editsList,
@@ -2423,28 +2607,27 @@ export function EditorLayout({
         setFilesRefreshTrigger((n) => n + 1);
       }
     } catch (err: any) {
-      clearTimeout(timeoutId);
+      if (idleTimer) clearTimeout(idleTimer);
       if (err.name === "AbortError") {
-        console.log("AI Agent chat request aborted.");
+        console.log("AI Agent chat request aborted.", idleTripped ? "(connection went silent)" : "(stopped)");
         setMessages((prev) => [
           ...prev,
           {
             id: `ai-abort-${Date.now()}`,
             sender: "assistant",
-            text: "⏱️ Request timed out or was stopped. Try a simpler prompt or click Send again.",
+            // A stop is the user's own doing; only a dead connection is an outage.
+            text: idleTripped ? MODEL_OUTAGE_MESSAGE : "Stopped.",
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           },
         ]);
         return;
       }
 
-      let userErrMsg = err.message || "Failed to reach AI service";
+      let userErrMsg = err.message || MODEL_OUTAGE_MESSAGE;
       if (userErrMsg.includes("input stream") || userErrMsg.includes("network") || userErrMsg.includes("Failed to fetch")) {
-        userErrMsg = "Connection interrupted while streaming. Please try sending your request again.";
+        userErrMsg = MODEL_OUTAGE_MESSAGE;
       }
-      const warningMsg = userErrMsg.toLowerCase().startsWith("ai agent error")
-        ? userErrMsg
-        : `AI Agent Error: ${userErrMsg}`;
+      const warningMsg = userErrMsg;
       toast.error(warningMsg, { duration: 6000 });
       setMessages((prev) => [
         ...prev,
@@ -2456,6 +2639,7 @@ export function EditorLayout({
         },
       ]);
     } finally {
+      if (idleTimer) clearTimeout(idleTimer);
       setIsAgentThinking(false);
       setAgentProgressSteps([]);
       abortControllerRef.current = null;
@@ -3192,7 +3376,42 @@ export function EditorLayout({
 
   return (
     <div className="fixed inset-0 w-full max-w-full bg-[#F4F5F7] dark:bg-[#0E0F12] text-slate-900 dark:text-[#E2E4E9] overflow-hidden selection:bg-emerald-500/20 selection:text-emerald-900 dark:selection:bg-[#22242C] dark:selection:text-white flex flex-col z-0 transition-colors">
-      
+      {/* Guest Session Notification Banner */}
+      {isGuestMode && (
+        <div className="bg-amber-50 dark:bg-[#1A1C22] border-b border-amber-200 dark:border-[#282A30] px-3 sm:px-4 py-2 flex flex-wrap items-center justify-between gap-2.5 text-xs z-30 shrink-0 select-none">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-2 w-2 relative">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+            </span>
+            <span className="font-mono font-medium text-amber-800 dark:text-amber-400 uppercase tracking-wider text-[10px] sm:text-[11px] bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
+              Guest Session
+            </span>
+            <span className="text-amber-900 dark:text-[#9E9E9E] text-xs font-mono">
+              Expires in: <strong className="text-amber-950 dark:text-amber-300 font-bold">{guestTimeLeft || "24:00:00"}</strong>
+            </span>
+            <span className="text-amber-700 dark:text-[#62666D] text-xs hidden md:inline">
+              · Read-only preview. Sign up to save this project permanently.
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 font-mono">
+            <Link
+              href={`/register?redirect=${encodeURIComponent(`/editor/${projectId || ""}`)}`}
+              className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 dark:bg-[#22242C] dark:hover:bg-[#2A2C36] text-white dark:text-[#E2E4E9] font-archivo font-bold text-xs border border-emerald-600 dark:border-[#282A30] transition-all flex items-center gap-1 cursor-pointer"
+            >
+              <span>Save Permanently</span>
+              <span>→</span>
+            </Link>
+            <Link
+              href={`/login?redirect=${encodeURIComponent(`/editor/${projectId || ""}`)}`}
+              className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-[#1A1C22] dark:hover:bg-[#22242C] text-slate-700 dark:text-[#9E9E9E] hover:text-slate-900 dark:hover:text-[#E2E4E9] text-xs border border-slate-200 dark:border-[#282A30] transition-colors"
+            >
+              Sign In
+            </Link>
+          </div>
+        </div>
+      )}
 
       {/* Main Top Navigation Header */}
       <header className="h-12 border-b border-slate-200 dark:border-[#282A30] bg-[#FAFAFC] dark:bg-[#141519] px-2.5 sm:px-4 flex items-center justify-between gap-1.5 sm:gap-3 shrink-0 z-10 select-none transition-colors">
@@ -3649,17 +3868,6 @@ export function EditorLayout({
                     </div>
                   </div>
 
-                  {fallbackModelNotice && (
-                    <div className="px-2.5 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs font-mono flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 truncate">
-                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                        <span className="truncate">{fallbackModelNotice}</span>
-                      </div>
-                      <button onClick={() => setFallbackModelNotice(null)} className="text-amber-600 dark:text-amber-400 hover:text-amber-900 dark:hover:text-white p-0.5">
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  )}
                 </div>
 
                 {/* Chat Message Stream */}
@@ -3744,6 +3952,7 @@ export function EditorLayout({
 
                   <div className="relative flex-1 font-mono">
                     <textarea
+                      ref={setDesktopChatTextarea}
                       id="ai-chat-input"
                       rows={1}
                       placeholder={chatMode === "ask" ? "Ask a question about LaTeX or your document..." : "Ask agent to edit LaTeX..."}
@@ -3756,6 +3965,13 @@ export function EditorLayout({
                       }}
                       onKeyDown={handleChatKeyDown}
                       className="w-full min-h-[38px] max-h-44 py-2 px-3 rounded-xl border border-slate-200 dark:border-[#282A30] bg-slate-50 focus:bg-white dark:bg-[#1A1C22] dark:focus:bg-[#1A1C22] text-slate-900 dark:text-[#E2E4E9] placeholder:text-slate-400 dark:placeholder:text-[#62666D] text-xs leading-relaxed outline-none focus:ring-1 focus:ring-emerald-500 dark:focus:ring-[#282A30] transition-all disabled:opacity-50 resize-none overflow-y-auto font-mono scrollbar-thin"
+                    />
+                    <FileMentionPopover
+                      textarea={desktopChatTextarea}
+                      projectId={projectId || "proj-1"}
+                      chatInput={chatInput}
+                      onInsertMention={handleInsertMention}
+                      onOpenChange={setDesktopMentionOpen}
                     />
                   </div>
 
@@ -4018,7 +4234,9 @@ export function EditorLayout({
               <Paperclip className="w-4 h-4 text-emerald-600 dark:text-[#10B981]" />
             </button>
 
+            <div className="relative flex-1 min-w-0">
             <textarea
+              ref={setMobileChatTextarea}
               id="ai-chat-input-2"
               rows={1}
               placeholder={chatMode === "ask"
@@ -4032,8 +4250,16 @@ export function EditorLayout({
                 e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`;
               }}
               onKeyDown={handleChatKeyDown}
-              className="flex-1 min-h-[40px] max-h-40 py-2.5 px-3 rounded-xl border border-slate-200 dark:border-[#282A30] bg-slate-50 dark:bg-[#1A1C22] text-slate-900 dark:text-[#E2E4E9] placeholder:text-slate-400 dark:placeholder:text-[#62666D] text-xs leading-relaxed outline-none focus:ring-1 focus:ring-emerald-500 dark:focus:ring-[#282A30] transition-all disabled:opacity-50 resize-none overflow-y-auto font-mono"
+              className="w-full min-h-[40px] max-h-40 py-2.5 px-3 rounded-xl border border-slate-200 dark:border-[#282A30] bg-slate-50 dark:bg-[#1A1C22] text-slate-900 dark:text-[#E2E4E9] placeholder:text-slate-400 dark:placeholder:text-[#62666D] text-xs leading-relaxed outline-none focus:ring-1 focus:ring-emerald-500 dark:focus:ring-[#282A30] transition-all disabled:opacity-50 resize-none overflow-y-auto font-mono"
             />
+            <FileMentionPopover
+              textarea={mobileChatTextarea}
+              projectId={projectId || "proj-1"}
+              chatInput={chatInput}
+              onInsertMention={handleInsertMention}
+              onOpenChange={setMobileMentionOpen}
+            />
+            </div>
 
             {isAgentThinking ? (
               <Button
