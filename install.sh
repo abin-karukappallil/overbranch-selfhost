@@ -98,21 +98,28 @@ if ! command -v git >/dev/null 2>&1; then
     fi
 fi
 
-# 3. Locate or clone repository
+# 3. Locate, clone, or update repository
 WORK_DIR=""
 if [ -f "./docker-compose.yml" ] && [ -f "./Dockerfile" ]; then
     WORK_DIR="$(pwd)"
 elif [ -d "$HOME/overbranch-selfhost" ] && [ -f "$HOME/overbranch-selfhost/docker-compose.yml" ]; then
     WORK_DIR="$HOME/overbranch-selfhost"
+    log_info "Found existing OverBranch directory at ${WORK_DIR}. Updating..."
+    (cd "$WORK_DIR" && git pull origin main 2>/dev/null || true)
 elif [ -d "./overbranch-selfhost" ] && [ -f "./overbranch-selfhost/docker-compose.yml" ]; then
     WORK_DIR="$(pwd)/overbranch-selfhost"
+    log_info "Found existing OverBranch directory at ${WORK_DIR}. Updating..."
+    (cd "$WORK_DIR" && git pull origin main 2>/dev/null || true)
 fi
 
 if [ -z "$WORK_DIR" ]; then
     REPO_URL="${OVERBRANCH_REPO_URL:-https://github.com/abin-karukappallil/overbranch-selfhost.git}"
     TARGET_DIR="${OVERBRANCH_INSTALL_DIR:-$HOME/overbranch-selfhost}"
-    log_info "Cloning OverBranch repository from ${CYAN}${REPO_URL}${RESET} into ${TARGET_DIR}..."
-    if [ ! -d "$TARGET_DIR" ]; then
+    if [ -d "$TARGET_DIR" ]; then
+        log_info "Directory ${TARGET_DIR} already exists. Updating to latest commit..."
+        (cd "$TARGET_DIR" && git pull origin main 2>/dev/null || true)
+    else
+        log_info "Cloning OverBranch repository from ${CYAN}${REPO_URL}${RESET} into ${TARGET_DIR}..."
         git clone --depth 1 "$REPO_URL" "$TARGET_DIR"
     fi
     WORK_DIR="$TARGET_DIR"
@@ -157,29 +164,48 @@ if ! command -v docker >/dev/null 2>&1; then
     esac
 fi
 
-# 5. Ensure Docker daemon is active
-if ! docker info >/dev/null 2>&1; then
-    log_info "Starting Docker daemon..."
+# 5. Determine if sudo is required for Docker socket (Linux non-root users)
+SUDO_PREFIX=""
+if [ "$(id -u)" -ne 0 ] && command -v docker >/dev/null 2>&1; then
+    DOCKER_ERR=$(docker info 2>&1 || true)
+    if echo "$DOCKER_ERR" | grep -qi "permission denied"; then
+        if command -v sudo >/dev/null 2>&1; then
+            echo "[INFO] User '$USER' requires permissions for /var/run/docker.sock."
+            echo "[INFO] Using 'sudo' for Docker commands..."
+            SUDO_PREFIX="sudo "
+            if ! groups "$USER" 2>/dev/null | grep -q "\bdocker\b"; then
+                echo "[INFO] Adding '$USER' to the 'docker' group..."
+                sudo usermod -aG docker "$USER" 2>/dev/null || true
+                echo "[TIP] To run Docker without sudo in future terminals, run: newgrp docker"
+            fi
+        fi
+    fi
+fi
+
+# 6. Ensure Docker daemon is active
+if ! ${SUDO_PREFIX}docker info >/dev/null 2>&1; then
+    log_info "Docker daemon is not active. Starting Docker daemon..."
     if [ "$DISTRO" = "macos" ]; then
         open -a Docker 2>/dev/null || true
     else
         if [ "$(id -u)" -eq 0 ]; then
             systemctl start docker 2>/dev/null || service docker start 2>/dev/null || true
         elif command -v sudo >/dev/null 2>&1; then
+            echo "[INFO] Starting Docker service (sudo password may be required)..."
             sudo systemctl start docker || sudo service docker start || true
         fi
     fi
 
     for i in $(seq 1 20); do
         sleep 2
-        if docker info >/dev/null 2>&1; then
+        if ${SUDO_PREFIX}docker info >/dev/null 2>&1; then
             log_ok "Docker daemon is active and responsive."
             break
         fi
     done
 fi
 
-# 6. Prepare local files (prevent directory-mount bug)
+# 7. Prepare local files (prevent directory-mount bug)
 if [ -d "$WORK_DIR/overbranch.db" ]; then
     rm -rf "$WORK_DIR/overbranch.db"
 fi
@@ -188,7 +214,7 @@ if [ ! -f "$WORK_DIR/overbranch.db" ]; then
 fi
 mkdir -p "$WORK_DIR/uploads"
 
-# 7. Create global 'overbranch' CLI launcher in ~/.local/bin or /usr/local/bin
+# 8. Create global 'overbranch' CLI launcher in ~/.local/bin or /usr/local/bin
 TARGET_BIN_DIR=""
 if [ -d "$HOME/.local/bin" ] || mkdir -p "$HOME/.local/bin" 2>/dev/null; then
     TARGET_BIN_DIR="$HOME/.local/bin"
@@ -205,6 +231,6 @@ EOF
     log_ok "Installed global CLI command: ${BOLD}overbranch${RESET} (in ${TARGET_BIN_DIR})"
 fi
 
-# 8. Start OverBranch via Docker Compose
+# 9. Start OverBranch via docker-up.sh
 chmod +x ./docker-up.sh
 exec ./docker-up.sh "$@"

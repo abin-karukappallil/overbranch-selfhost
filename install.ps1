@@ -54,9 +54,13 @@ if (Test-Path ".\docker-compose.yml" -PathType Leaf) {
 if (-not $workDir) {
     $repoUrl = "https://github.com/abin-karukappallil/overbranch-selfhost.git"
     $targetDir = "$HOME\overbranch-selfhost"
-    Write-Cyan "Cloning OverBranch repository from $repoUrl into $targetDir..."
     if (-not (Test-Path $targetDir)) {
         & git clone --depth 1 $repoUrl $targetDir
+    } else {
+        Write-Cyan "Found existing OverBranch directory at $targetDir. Updating..."
+        Push-Location $targetDir
+        & git pull origin main 2>$null
+        Pop-Location
     }
     $workDir = $targetDir
 }
