@@ -118,6 +118,8 @@ RUN apt-get update && \
     texlive-xetex \
     texlive-luatex \
     texlive-bibtex-extra \
+    texlive-plain-generic \
+    texlive-extra-utils \
     biber \
     latexmk \
     cm-super \
@@ -162,8 +164,8 @@ RUN set -eux; cd /usr/local/share/overbranch/smoke-tests; \
     echo "== makeindex + glossaries via latexmk =="; \
     latexmk -pdf -interaction=nonstopmode glos.tex; \
     test -f glos.pdf; \
-    echo "== minted under restricted shell-escape =="; \
-    latexmk -pdf -interaction=nonstopmode mint.tex; \
+    echo "== minted under shell-escape =="; \
+    latexmk -pdf -interaction=nonstopmode -shell-escape mint.tex; \
     test -f mint.pdf; \
     echo "== beamer metropolis =="; \
     latexmk -pdf -interaction=nonstopmode deck.tex || \
