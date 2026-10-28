@@ -60,7 +60,6 @@ RUN sed -i 's/ main$/ main contrib/' /etc/apt/sources.list.d/debian.sources 2>/d
     fonts-inconsolata \
     fonts-hack \
     fonts-firacode \
-    fonts-fira-sans \
     fonts-jetbrains-mono \
     fonts-ibm-plex \
     fonts-stix \
