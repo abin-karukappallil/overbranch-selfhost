@@ -2,7 +2,32 @@
 # OverBranch Self-Host — 1-Click Docker Compose Launcher (PowerShell)
 # ==============================================================================
 
+param(
+    [string]$Action = "up",
+    [switch]$Build
+)
+
 $ErrorActionPreference = "Stop"
+
+# 1. Handle management subcommands
+if ($Action -in @("down", "stop")) {
+    Write-Host "[INFO] Stopping OverBranch containers..." -ForegroundColor Cyan
+    & docker compose down
+    exit $LASTEXITCODE
+}
+if ($Action -eq "logs") {
+    & docker compose logs -f
+    exit $LASTEXITCODE
+}
+if ($Action -in @("ps", "status")) {
+    & docker compose ps
+    exit $LASTEXITCODE
+}
+if ($Action -eq "restart") {
+    Write-Host "[INFO] Restarting OverBranch containers..." -ForegroundColor Cyan
+    & docker compose restart
+    exit $LASTEXITCODE
+}
 
 Write-Host @"
 ============================================================
@@ -11,7 +36,7 @@ Write-Host @"
 ============================================================
 "@ -ForegroundColor Green
 
-# 1. Check or install Docker on Windows
+# 2. Check or install Docker on Windows
 $dockerBinDir = "C:\Program Files\Docker\Docker\resources\bin"
 $dockerCmd = Get-Command docker -ErrorAction SilentlyContinue
 
@@ -53,7 +78,7 @@ if (-not $dockerCmd) {
     }
 }
 
-# 2. Check and start Docker Desktop daemon if not already running
+# 3. Check and start Docker Desktop daemon if not already running
 $daemonReady = $false
 try {
     & docker info 2>&1 | Out-Null
@@ -86,11 +111,29 @@ if (-not $daemonReady) {
     }
 }
 
-# 3. Start OverBranch via Docker Compose
+# 4. Prepare required database file and uploads directory
+$rootDir = $PSScriptRoot
+if (-not $rootDir) { $rootDir = Get-Location }
+
+$dbPath = Join-Path $rootDir "overbranch.db"
+if (Test-Path $dbPath -PathType Container) {
+    Write-Host "[WARN] 'overbranch.db' is a directory. Correcting to SQLite database file..." -ForegroundColor Yellow
+    Remove-Item $dbPath -Recurse -Force
+}
+if (-not (Test-Path $dbPath)) {
+    New-Item -ItemType File -Path $dbPath -Force | Out-Null
+}
+$uploadsDir = Join-Path $rootDir "uploads"
+if (-not (Test-Path $uploadsDir)) {
+    New-Item -ItemType Directory -Path $uploadsDir -Force | Out-Null
+}
+
+# 5. Start OverBranch via Docker Compose
 Write-Host ""
 Write-Host "[INFO] Starting OverBranch via Docker Compose..." -ForegroundColor Cyan
 
-$composeProc = Start-Process -FilePath "docker" -ArgumentList "compose up -d" -NoNewWindow -PassThru -Wait
+$composeArgs = if ($Build -or $Action -eq "build") { "compose up --build -d" } else { "compose up -d" }
+$composeProc = Start-Process -FilePath "docker" -ArgumentList $composeArgs -NoNewWindow -PassThru -Wait
 if ($composeProc.ExitCode -ne 0) {
     Write-Host "[WARN] 'docker compose' failed, trying legacy 'docker-compose'..." -ForegroundColor Yellow
     $composeProc = Start-Process -FilePath "docker-compose" -ArgumentList "up -d" -NoNewWindow -PassThru -Wait
@@ -108,6 +151,12 @@ if ($composeProc.ExitCode -eq 0) {
    • Web Editor Workspace: http://localhost:3000
    • TeX Engine API:       http://localhost:8000
    • Gemini Web2API Proxy: http://localhost:8081
+============================================================
+
+   Management commands:
+     .\docker-up.ps1 -Action stop    - Stop containers
+     .\docker-up.ps1 -Action logs    - View container logs
+     .\docker-up.ps1 -Action restart - Restart services
 ============================================================
 
 "@ -ForegroundColor Green

@@ -803,69 +803,102 @@ def _ensure_docker_daemon_running():
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="OverBranch Self-Host Installer")
-    parser.add_argument("--docker", action="store_true", help="Install Docker for host OS and setup Docker stack")
+    parser.add_argument("--bare-metal", action="store_true", help="Install directly onto host OS (legacy bare-metal mode)")
     args, _ = parser.parse_known_args()
 
     print(f"""{BOLD}{GREEN}
 ============================================================
-       OverBranch Self-Host Installation & Setup
+       OverBranch Self-Host Docker Installation
        100% Local TeX Editor • Local Gemini Web2API • SQLite
 ============================================================{RESET}
 """)
-    if args.docker:
-        check_or_install_docker()
+    if args.bare_metal:
+        log_info("Running in legacy bare-metal installation mode...")
+        # 1. Download Gemini Web2API binary
+        download_gemini_web2api()
+
+        # 2. Setup Python environment
+        python_bin = setup_python_environment()
+
+        # 3. Setup Frontend dependencies & compile production build
+        setup_frontend_dependencies()
+        build_frontend()
+
+        # 4. Initialize SQLite database
+        initialize_sqlite_database(python_bin)
+
+        # 5. Check and install LaTeX compiler (MiKTeX on Windows)
+        check_or_install_latex()
+
         print(f"""
 {BOLD}{GREEN}============================================================
-   Docker Environment Installed & Ready!
+   OverBranch Bare-Metal Installation Complete!
 ============================================================{RESET}
 
-{BOLD}{CYAN}>>> Access overbranch through localhost:3000 <<<{RESET}
-
-To start OverBranch via Docker Compose:
-  {BOLD}docker compose up -d{RESET}
-  or double-click:
-  {BOLD}docker-up.bat{RESET} (Windows) / {BOLD}./docker-up.sh{RESET} (Linux/macOS)
+To run: python run.py --bare-metal
 """)
         return
 
-    # 1. Download Gemini Web2API binary
-    download_gemini_web2api()
+    # Default mode: 100% Docker Compose
+    log_info("Setting up OverBranch Self-Host via Docker Compose...")
 
-    # 2. Setup Python environment
-    python_bin = setup_python_environment()
+    # 1. Check or install Docker
+    check_or_install_docker()
 
-    # 3. Setup Frontend dependencies & compile production build
-    setup_frontend_dependencies()
-    build_frontend()
+    # 2. Ensure daemon is running
+    _ensure_docker_daemon_running()
 
-    # 4. Initialize SQLite database
-    initialize_sqlite_database(python_bin)
+    # 3. Prepare database file and upload directory
+    db_file = ROOT_DIR / "overbranch.db"
+    if db_file.is_dir():
+        log_warn("Detected 'overbranch.db' as a directory. Correcting to SQLite database file...")
+        shutil.rmtree(db_file)
+    if not db_file.exists():
+        db_file.touch()
 
-    # 5. Check and install LaTeX compiler (MiKTeX on Windows)
-    check_or_install_latex()
+    uploads_dir = ROOT_DIR / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    # 4. Setup global 'overbranch' CLI shortcut
+    system = platform.system().lower()
+    user_bin = Path.home() / ".local" / "bin"
+    user_bin.mkdir(parents=True, exist_ok=True)
+
+    if system == "windows":
+        cmd_file = user_bin / "overbranch.cmd"
+        cmd_content = f'@echo off\r\ncall "{ROOT_DIR / "docker-up.bat"}" %*\r\n'
+        cmd_file.write_text(cmd_content)
+        log_success(f"Installed global Windows command: overbranch ({cmd_file})")
+    else:
+        cli_file = user_bin / "overbranch"
+        cli_content = f'#!/usr/bin/env bash\ncd "{ROOT_DIR}" && exec ./docker-up.sh "$@"\n'
+        cli_file.write_text(cli_content)
+        cli_file.chmod(0o755)
+        log_success(f"Installed global CLI command: overbranch ({cli_file})")
+
+    # 5. Start with Docker Compose
+    compose_cmd = ["docker", "compose"] if shutil.which("docker") else ["docker-compose"]
+    log_info(f"Starting OverBranch via Docker Compose ({' '.join(compose_cmd)} up -d)...")
+    res = subprocess.call(compose_cmd + ["up", "-d"], cwd=str(ROOT_DIR))
 
     print(f"""
 {BOLD}{GREEN}============================================================
-   OverBranch Self-Host Installation Complete!
+   OverBranch Self-Host Installation Succeeded!
 ============================================================{RESET}
 
 {BOLD}{CYAN}>>> Access overbranch through localhost:3000 <<<{RESET}
 
-To run the entire app (Frontend + Backend + Gemini Web2API):
+All services are containerized with {BOLD}zero .env configuration{RESET}:
+  • Web Frontend:    {CYAN}http://localhost:3000{RESET}
+  • TeX Engine API:  {CYAN}http://localhost:8000{RESET}
+  • Gemini Proxy:    {CYAN}http://localhost:8081{RESET}
+  • Database:        {CYAN}overbranch.db (SQLite with Vector Search){RESET}
 
-  {BOLD}python run.py{RESET}
-  or:
-  {BOLD}./run.sh{RESET}   (Linux / macOS)
-  {BOLD}run.bat{RESET}    (Windows)
+To start OverBranch anytime from anywhere:
+  {BOLD}{GREEN}overbranch{RESET}
 
-Or run with Docker Compose (1-Click, Zero Configuration):
-  {BOLD}docker compose up -d{RESET}
-  (or use: {BOLD}docker-up.bat{RESET} / {BOLD}./docker-up.sh{RESET})
-
-Access points once running:
-  • Web Editor Workspace:  {CYAN}http://localhost:3000{RESET}
-  • TeX Engine API:        {CYAN}http://localhost:8000{RESET}
-  • Gemini Web2API Proxy:  {CYAN}http://localhost:8081{RESET}
+Or from this directory:
+  {BOLD}./run.sh{RESET} (Linux / macOS) or {BOLD}run.bat{RESET} (Windows)
 """)
 
 if __name__ == "__main__":

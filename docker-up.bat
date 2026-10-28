@@ -1,15 +1,44 @@
 @echo off
 setlocal enabledelayedexpansion
 
+cd /d "%~dp0"
+
+REM 1. Handle management subcommands
+if "%~1"=="down" (
+    echo [INFO] Stopping OverBranch containers...
+    docker compose down
+    exit /b %ERRORLEVEL%
+)
+if "%~1"=="stop" (
+    echo [INFO] Stopping OverBranch containers...
+    docker compose down
+    exit /b %ERRORLEVEL%
+)
+if "%~1"=="logs" (
+    docker compose logs -f
+    exit /b %ERRORLEVEL%
+)
+if "%~1"=="ps" (
+    docker compose ps
+    exit /b %ERRORLEVEL%
+)
+if "%~1"=="status" (
+    docker compose ps
+    exit /b %ERRORLEVEL%
+)
+if "%~1"=="restart" (
+    echo [INFO] Restarting OverBranch containers...
+    docker compose restart
+    exit /b %ERRORLEVEL%
+)
+
 echo ============================================================
 echo           OverBranch Self-Host Docker Launcher
 echo    100% Local • Zero API Keys • SQLite • Gemini Web2API
 echo ============================================================
 echo.
 
-cd /d "%~dp0"
-
-REM 1. Check if Docker is already in PATH or installed in default Program Files location
+REM 2. Check if Docker is in PATH or standard Program Files location
 set "DOCKER_BIN_DIR=C:\Program Files\Docker\Docker\resources\bin"
 where docker >nul 2>nul
 if %ERRORLEVEL% neq 0 (
@@ -17,7 +46,7 @@ if %ERRORLEVEL% neq 0 (
         set "PATH=%DOCKER_BIN_DIR%;!PATH!"
         echo [INFO] Detected Docker in standard installation path.
     ) else (
-        echo [INFO] Docker is not installed on this system.
+        echo [INFO] Docker is not installed on this Windows system.
         echo [INFO] Automatically installing Docker Desktop for Windows...
         echo.
         
@@ -34,7 +63,6 @@ if %ERRORLEVEL% neq 0 (
             del "%TEMP%\DockerDesktopInstaller.exe" 2>nul
         )
 
-        REM Add to current session PATH and update User environment
         if exist "%DOCKER_BIN_DIR%\docker.exe" (
             set "PATH=%DOCKER_BIN_DIR%;!PATH!"
             powershell -NoProfile -Command "$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($p -notlike '*Docker*') { [Environment]::SetEnvironmentVariable('Path', '%DOCKER_BIN_DIR%;' + $p, 'User') }" 2>nul
@@ -48,7 +76,7 @@ if %ERRORLEVEL% neq 0 (
     )
 )
 
-REM 2. Ensure Docker Desktop engine daemon is running
+REM 3. Ensure Docker Desktop daemon is running
 docker info >nul 2>nul
 if %ERRORLEVEL% neq 0 (
     echo [INFO] Docker daemon is not active. Starting Docker Desktop...
@@ -77,11 +105,25 @@ if %ERRORLEVEL% neq 0 (
 )
 
 :DOCKER_READY
-echo.
-echo [INFO] Starting OverBranch via Docker Compose...
-echo.
 
-docker compose up -d
+REM 4. Ensure required database file and upload directories exist (prevents volume directory bug)
+if exist "%~dp0overbranch.db\" (
+    echo [WARN] 'overbranch.db' is a directory. Correcting to SQLite database file...
+    rmdir /s /q "%~dp0overbranch.db"
+)
+if not exist "%~dp0overbranch.db" type nul > "%~dp0overbranch.db"
+if not exist "%~dp0uploads" mkdir "%~dp0uploads"
+
+REM 5. Start OverBranch via Docker Compose
+echo.
+if "%~1"=="build" (
+    echo [INFO] Building and starting OverBranch via Docker Compose...
+    docker compose up --build -d
+) else (
+    echo [INFO] Starting OverBranch via Docker Compose...
+    docker compose up -d
+)
+
 if %ERRORLEVEL% neq 0 (
     echo [WARN] 'docker compose' failed, trying legacy 'docker-compose'...
     docker-compose up -d
@@ -100,9 +142,16 @@ if %ERRORLEVEL% equ 0 (
     echo   • Gemini Web2API Proxy: http://localhost:8081
     echo ============================================================
     echo.
+    echo   Management commands:
+    echo     docker-up.bat stop     (or run.bat stop)    - Stop containers
+    echo     docker-up.bat logs     (or run.bat logs)    - View container logs
+    echo     docker-up.bat restart  (or run.bat restart) - Restart services
+    echo ============================================================
+    echo.
     echo Opening OverBranch in default browser...
     start http://localhost:3000
 ) else (
     echo [ERROR] Failed to start Docker container.
     pause
+    exit /b 1
 )

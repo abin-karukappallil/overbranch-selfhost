@@ -1,370 +1,245 @@
 #!/usr/bin/env python3
 """
-run.py — Universal Cross-Platform Single Runner for OverBranch Self-Host
-========================================================================
-Runs the whole stack in a single command on Windows, macOS, and Linux:
-  1. Gemini Web2API local Go proxy  (port 8081)
-  2. FastAPI Python LaTeX engine     (port 8000)
-  3. Next.js App Router frontend     (port 3000)
+run.py — Universal Cross-Platform Single Runner for OverBranch Self-Host (Docker Compose)
+========================================================================================
+Runs OverBranch inside Docker using docker-compose.yml across all operating systems:
+  - Windows: 10 / 11 / Server
+  - macOS: Intel & Apple Silicon
+  - Linux: Ubuntu, Debian, Arch Linux, Fedora, CentOS, etc.
 
-Features:
-  - Automatic graceful shutdown on Ctrl+C (SIGINT / SIGTERM)
-  - Color-coded prefix logs for all 3 services
-  - Self-healing checks (auto-triggers install.py if dependencies missing)
+Usage:
+  python run.py              (starts containers in background and opens browser)
+  python run.py stop         (stops containers)
+  python run.py down         (stops and removes containers)
+  python run.py logs         (tails live container logs)
+  python run.py restart      (restarts containers)
+  python run.py status       (checks container status)
+  python run.py build        (rebuilds Docker image and starts)
+  python run.py --bare-metal (runs legacy bare-metal processes on host OS)
 """
 
 import os
 import sys
 import time
-import signal
 import shutil
 import platform
 import subprocess
-import threading
+import webbrowser
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
-BIN_DIR = ROOT_DIR / "bin"
-BACKEND_DIR = ROOT_DIR / "backend"
 
 # ANSI Colors
 CYAN = "\033[96m"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
 RED = "\033[91m"
-MAGENTA = "\033[95m"
-BLUE = "\033[94m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
-processes = []
-is_shutting_down = False
-
-
 def log_runner(msg: str):
     print(f"{BOLD}{GREEN}[OverBranch]{RESET} {msg}")
+
+def log_warn(msg: str):
+    print(f"{BOLD}{YELLOW}[OverBranch WARN]{RESET} {msg}")
 
 def log_error(msg: str):
     print(f"{BOLD}{RED}[OverBranch ERROR]{RESET} {msg}")
 
 
-def get_backend_python() -> Path:
-    """Finds Python executable in backend venv or falls back to system Python."""
-    if platform.system().lower() == "windows":
-        venv_py = BACKEND_DIR / ".venv" / "Scripts" / "python.exe"
-    else:
-        venv_py = BACKEND_DIR / ".venv" / "bin" / "python"
-    
-    if venv_py.exists():
-        return venv_py
-    return Path(sys.executable)
-
-
-def get_web2api_binary() -> Optional[Path]:
-    """Finds gemini-web2api binary."""
-    binary_name = "gemini-web2api.exe" if platform.system().lower() == "windows" else "gemini-web2api"
-    p = BIN_DIR / binary_name
-    if p.exists():
-        if platform.system().lower() != "windows":
-            p.chmod(0o755)
-        return p
-def auto_update_git() -> bool:
-    """Pulls latest updates from origin main before starting. Returns True if updates were pulled."""
-    if not (ROOT_DIR / ".git").exists() or not shutil.which("git"):
-        return False
-
-    log_runner("Checking for updates from GitHub (git pull origin main)...")
+def get_compose_command():
+    """Returns the available Docker Compose command array."""
     try:
-        proc = subprocess.run(
-            ["git", "pull", "origin", "main"],
-            cwd=str(ROOT_DIR),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=15,
-        )
-        output = proc.stdout.strip()
-        if proc.returncode == 0:
-            if "Already up to date" in output or "Already up-to-date" in output:
-                log_runner("OverBranch is up to date.")
-                return False
-            else:
-                log_runner(f"Pulled latest updates:\n{output}")
-                return True
-        else:
-            log_runner(f"Git auto-update notice: {output}")
-            return False
-    except subprocess.TimeoutExpired:
-        log_runner("Git auto-update timed out (offline or slow connection). Continuing start...")
-        return False
-    except Exception as e:
-        log_runner(f"Git auto-update skipped: {e}. Continuing start...")
-        return False
-
-
-def get_frontend_cmd(dev_mode: bool = False) -> list[str]:
-    """Selects package manager command for Next.js frontend (compiled production by default)."""
-    subcmd = "dev" if dev_mode else "start"
-    if shutil.which("bun"):
-        return ["bun", "run", subcmd]
-    elif shutil.which("npm"):
-        return ["npm", "run", subcmd]
-    elif shutil.which("pnpm"):
-        return ["pnpm", subcmd]
-    elif shutil.which("yarn"):
-        return ["yarn", subcmd]
-    return ["npm", "run", subcmd]
-
-
-def stream_logs(pipe, prefix: str, color: str):
-    """Streams child process stdout/stderr with colorized service prefixes."""
-    try:
-        for line in iter(pipe.readline, ""):
-            if not line:
-                break
-            stripped = line.rstrip("\r\n")
-            if stripped:
-                print(f"{color}{prefix}{RESET} {stripped}")
+        res = subprocess.run(["docker", "compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        if res.returncode == 0:
+            return ["docker", "compose"]
     except Exception:
         pass
 
+    if shutil.which("docker-compose"):
+        return ["docker-compose"]
 
-def start_service(name: str, cmd: list[str], cwd: Path, color: str) -> subprocess.Popen:
-    """Starts a subprocess with piped outputs and cross-platform process isolation."""
-    log_runner(f"Starting {name} ({' '.join(cmd)})...")
-    
-    # Hardcoded sample environment defaults for 100% zero-configuration self-hosting
-    service_env = os.environ.copy()
-    service_env.setdefault("PORT", "3000" if name == "Frontend" else "8000")
-    service_env.setdefault("DATABASE_URL", "sqlite:///overbranch.db")
-    service_env.setdefault("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
-    service_env.setdefault("NEXT_PUBLIC_BACKEND_URL", "http://localhost:8000")
-    service_env.setdefault("BACKEND_URL", "http://localhost:8000")
-    service_env.setdefault("WEB2API_BASE_URL", "http://localhost:8081/v1")
-    service_env.setdefault("GEMINI_WEB2API_BASE_URL", "http://localhost:8081/v1")
-    service_env.setdefault("WEB2API_API_KEY", "local")
-    service_env.setdefault("GEMINI_WEB2API_API_KEY", "local")
-    service_env.setdefault("AUTH_SECRET", "selfhost-local-sample-secret-overbranch-2026")
-    service_env.setdefault("NEXT_PUBLIC_ZERO_AUTH", "true")
-    service_env.setdefault("LLM_IDLE_TIMEOUT", "120")
-    service_env.setdefault("LLM_ATTEMPT_WALL_CAP", "300")
+    return None
 
-    # Process group handling for clean termination
-    kwargs = {
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.STDOUT,
-        "text": True,
-        "bufsize": 1,
-        "cwd": str(cwd),
-        "env": service_env,
-    }
 
-    if platform.system().lower() == "windows":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        # On Windows, commands like npm, pnpm, yarn are .cmd/.bat scripts requiring shell=True
-        first_bin = cmd[0] if cmd else ""
-        resolved = shutil.which(first_bin)
-        if resolved:
-            cmd = [resolved] + cmd[1:]
-            if resolved.lower().endswith((".cmd", ".bat")):
-                kwargs["shell"] = True
+def ensure_docker_daemon_running():
+    """Verifies that the Docker daemon is responsive, attempting to start it if inactive."""
+    system = platform.system().lower()
+
+    try:
+        res = subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        if res.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    log_runner("Docker daemon is inactive. Starting Docker service...")
+    if system == "windows":
+        app = Path("C:/Program Files/Docker/Docker/Docker Desktop.exe")
+        if app.exists():
+            subprocess.Popen([str(app)], shell=True)
         else:
-            kwargs["shell"] = True
-    else:
-        kwargs["preexec_fn"] = os.setsid
+            log_warn("Could not find Docker Desktop.exe. Please launch Docker Desktop manually.")
+    elif system == "darwin":
+        subprocess.run(["open", "-a", "Docker"], check=False)
+    elif system == "linux":
+        if os.geteuid() == 0:
+            subprocess.run(["systemctl", "start", "docker"], check=False)
+        elif shutil.which("sudo"):
+            log_runner("Starting Docker service (sudo password may be required)...")
+            subprocess.run(["sudo", "systemctl", "start", "docker"], check=False)
 
-    proc = subprocess.Popen(cmd, **kwargs)
-    processes.append(proc)
-
-    # Background thread to stream logs
-    t = threading.Thread(target=stream_logs, args=(proc.stdout, f"[{name}]", color), daemon=True)
-    t.start()
-    return proc
-
-
-def shutdown_all(signum=None, frame=None):
-    """Gracefully shuts down all spawned background services."""
-    global is_shutting_down
-    if is_shutting_down:
-        return
-    is_shutting_down = True
-    print("\n")
-    log_runner("Shutting down all OverBranch services gracefully...")
-
-    for p in processes:
-        if p.poll() is None:
-            try:
-                if platform.system().lower() == "windows":
-                    # Use taskkill /T /F to kill the full process tree (e.g. node.exe under npm.cmd)
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                else:
-                    os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-            except Exception:
-                pass
-
-    time.sleep(1)
-
-    for p in processes:
-        if p.poll() is None:
-            try:
-                if platform.system().lower() == "windows":
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                else:
-                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-            except Exception:
-                pass
-
-    log_runner("All OverBranch services stopped. Goodbye!")
-    sys.exit(0)
-
-
-def free_ports(ports=(3000, 8000, 8081)):
-    """Ensures ports are clear by terminating lingering processes from prior runs."""
-    import socket
-    import re
-    is_win = platform.system().lower() == "windows"
-    for port in ports:
+    for i in range(20):
+        time.sleep(2)
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.3)
-                if s.connect_ex(('127.0.0.1', port)) != 0:
-                    continue
-            # Port is actively occupied; terminate the process listening on it
-            if not is_win:
-                subprocess.run(["fuser", "-k", f"{port}/tcp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            else:
-                out = subprocess.check_output("netstat -ano -p tcp", shell=True, text=True, stderr=subprocess.DEVNULL)
-                pids = set()
-                for line in out.splitlines():
-                    m = re.search(rf":{port}\s+.*?(?:LISTENING|ESTABLISHED)\s+(\d+)", line, re.I)
-                    if m:
-                        pids.add(m.group(1))
-                for pid in pids:
-                    if pid and pid != "0":
-                        subprocess.run(["taskkill", "/F", "/T", "/PID", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0:
+                log_runner("Docker daemon is active and responsive.")
+                return True
         except Exception:
             pass
 
+    return False
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="OverBranch Self-Host Launcher")
-    parser.add_argument("--dev", action="store_true", help="Run Next.js in development mode with HMR (slower)")
-    parser.add_argument("--build", action="store_true", help="Recompile Next.js production build before starting")
-    parser.add_argument("--no-pull", action="store_true", help="Skip automatic git pull on startup")
-    args, _ = parser.parse_known_args()
 
-    signal.signal(signal.SIGINT, shutdown_all)
-    signal.signal(signal.SIGTERM, shutdown_all)
+def prepare_local_files():
+    """Ensures database file and uploads directory exist to avoid Docker directory-mount bug."""
+    db_file = ROOT_DIR / "overbranch.db"
+    if db_file.is_dir():
+        log_warn("Detected 'overbranch.db' as a directory. Correcting to SQLite database file...")
+        shutil.rmtree(db_file)
+    if not db_file.exists():
+        db_file.touch()
 
-    # 0. Automatically pull latest updates from git on each start
-    pulled_updates = False
-    if not args.no_pull:
-        pulled_updates = auto_update_git()
+    uploads_dir = ROOT_DIR / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
 
-    # Clear any stale lingering processes occupying ports 3000, 8000, 8081
-    free_ports((3000, 8000, 8081))
 
-    # Ensure dependencies installed
-    web2api_bin = get_web2api_binary()
-    python_bin = get_backend_python()
+def run_docker_compose(args):
+    """Executes Docker Compose with the requested arguments."""
+    compose_cmd = get_compose_command()
 
-    if not web2api_bin:
-        log_runner("Gemini Web2API binary missing. Running install.py...")
-        subprocess.run([sys.executable, str(ROOT_DIR / "install.py")], check=True)
-        web2api_bin = get_web2api_binary()
+    # If Docker Compose is missing or Docker is not installed, delegate to shell/bat launcher
+    if not shutil.which("docker") or not compose_cmd:
+        system = platform.system().lower()
+        log_warn("Docker or Docker Compose not found in PATH.")
+        if system == "windows":
+            bat = ROOT_DIR / "docker-up.bat"
+            if bat.exists():
+                log_runner("Handing over to Windows Docker installer (docker-up.bat)...")
+                sys.exit(subprocess.call([str(bat)] + args))
+        else:
+            sh = ROOT_DIR / "docker-up.sh"
+            if sh.exists():
+                sh.chmod(0o755)
+                log_runner("Handing over to Linux/macOS Docker installer (docker-up.sh)...")
+                sys.exit(subprocess.call([str(sh)] + args))
 
-    # Ensure LaTeX compiler is installed and available on Windows
-    if platform.system().lower() == "windows":
-        if not shutil.which("pdflatex") and not shutil.which("latexmk"):
-            try:
-                from install import check_or_install_latex
-                check_or_install_latex()
-            except Exception as e:
-                log_runner(f"Notice: LaTeX setup notice: {e}")
+        log_error("Docker is required to run OverBranch Self-Host.")
+        log_error("Please install Docker: https://docs.docker.com/get-docker/")
+        sys.exit(1)
 
-    mode_label = "Development (next dev)" if args.dev else "Compiled Production (next start)"
-    print(f"""{BOLD}{GREEN}
-============================================================
-              OverBranch Self-Host Launcher
-   100% Local • Zero API Keys • SQLite • Gemini Web2API
-   Mode: {mode_label}
-============================================================{RESET}
-""")
+    # Subcommands
+    action = args[0] if args else "up"
+    if action in ("down", "stop"):
+        log_runner("Stopping OverBranch containers...")
+        sys.exit(subprocess.call(compose_cmd + ["down"]))
+    elif action == "logs":
+        sys.exit(subprocess.call(compose_cmd + ["logs", "-f"] + args[1:]))
+    elif action in ("ps", "status"):
+        sys.exit(subprocess.call(compose_cmd + ["ps"]))
+    elif action == "restart":
+        log_runner("Restarting OverBranch containers...")
+        sys.exit(subprocess.call(compose_cmd + ["restart"]))
 
-    # 1. Start Gemini Web2API Proxy (Port 8081)
-    if web2api_bin:
-        cfg_arg = ["-config", str(BIN_DIR / "config.json")] if (BIN_DIR / "config.json").exists() else []
-        start_service(
-            name="Web2API",
-            cmd=[str(web2api_bin), "-port", "8081"] + cfg_arg,
-            cwd=BIN_DIR,
-            color=MAGENTA,
-        )
+    # Spin up daemon if inactive
+    if not ensure_docker_daemon_running():
+        log_error("Could not connect to Docker daemon. Please start Docker and try again.")
+        sys.exit(1)
+
+    prepare_local_files()
+
+    if action == "build" or "--build" in args:
+        cmd = compose_cmd + ["up", "--build", "-d"]
     else:
-        log_error("Could not start Gemini Web2API. Please verify bin/gemini-web2api exists.")
+        cmd = compose_cmd + ["up", "-d"]
 
-    time.sleep(1.5)
-
-    # 2. Start FastAPI LaTeX Backend (Port 8000)
-    backend_cmd = [
-        str(python_bin),
-        "-m", "uvicorn",
-        "main:app",
-        "--host", "0.0.0.0",
-        "--port", "8000",
-    ]
-    start_service(
-        name="Backend",
-        cmd=backend_cmd,
-        cwd=BACKEND_DIR,
-        color=BLUE,
-    )
-
-    time.sleep(1.5)
-
-    # 3. Start Next.js Frontend (Port 3000, compiled version for maximum speed)
-    if not args.dev:
-        build_id_file = ROOT_DIR / ".next" / "BUILD_ID"
-        if args.build or pulled_updates or not build_id_file.exists():
-            log_runner("Compiling Next.js production build for maximum speed (next build)...")
-            build_pkg = "bun" if shutil.which("bun") else "npm"
-            subprocess.run([build_pkg, "run", "build"], cwd=str(ROOT_DIR), check=True, shell=(platform.system().lower() == "windows"))
-            log_runner("Production build compiled successfully.")
-
-    frontend_cmd = get_frontend_cmd(dev_mode=args.dev)
-    start_service(
-        name="Frontend",
-        cmd=frontend_cmd,
-        cwd=ROOT_DIR,
-        color=CYAN,
-    )
+    log_runner(f"Starting OverBranch via Docker Compose ({' '.join(cmd)})...")
+    res = subprocess.call(cmd, cwd=str(ROOT_DIR))
+    if res != 0:
+        log_error("Docker Compose failed to start container.")
+        sys.exit(res)
 
     print(f"""
 {BOLD}{GREEN}============================================================
        OverBranch Self-Host is running successfully!
 ============================================================{RESET}
 
-{BOLD}{CYAN}>>> Access overbranch through localhost:3000 <<<{RESET}
+  {BOLD}{CYAN}Access overbranch through localhost:3000{RESET}
 
-  {BOLD}• Web Editor Workspace:{RESET}  {CYAN}http://localhost:3000{RESET}
-  {BOLD}• TeX Engine API:{RESET}        {BLUE}http://localhost:8000{RESET}
-  {BOLD}• Gemini Web2API Proxy:{RESET}  {MAGENTA}http://localhost:8081{RESET}
+  • Web Editor Workspace:  {CYAN}http://localhost:3000{RESET}
+  • TeX Engine API:        {CYAN}http://localhost:8000{RESET}
+  • Gemini Web2API Proxy:  {CYAN}http://localhost:8081{RESET}
+{BOLD}{GREEN}============================================================{RESET}
 
-Press {BOLD}Ctrl+C{RESET} at any time to stop all services.
+  Management commands:
+    python run.py stop     - Stop containers
+    python run.py logs     - View live container logs
+    python run.py restart  - Restart services
+{BOLD}{GREEN}============================================================{RESET}
 """)
 
-    # Keep main thread alive and monitor processes
+    # Open browser
     try:
-        while not is_shutting_down:
-            time.sleep(1)
-            for p in processes:
-                if p.poll() is not None and not is_shutting_down:
-                    log_error(f"A service process ({p.pid}) exited with code {p.returncode}. Shutting down services...")
-                    shutdown_all()
-                    break
+        webbrowser.open("http://localhost:3000")
+    except Exception:
+        pass
+
+
+def run_bare_metal_legacy(args):
+    """Legacy bare-metal launcher for developers who specifically pass --bare-metal."""
+    log_runner("Running in legacy bare-metal mode on host OS...")
+    python_bin = sys.executable
+    processes = []
+
+    def cleanup():
+        for p in processes:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+
+    try:
+        # 1. Gemini Web2API
+        web2api = ROOT_DIR / "bin" / ("gemini-web2api.exe" if platform.system().lower() == "windows" else "gemini-web2api")
+        if web2api.exists():
+            cfg_flag = ["-config", str(ROOT_DIR / "bin" / "config.json")] if (ROOT_DIR / "bin" / "config.json").exists() else []
+            p_web2 = subprocess.Popen([str(web2api), "-port", "8081"] + cfg_flag)
+            processes.append(p_web2)
+
+        # 2. FastAPI backend
+        backend_dir = ROOT_DIR / "backend"
+        p_back = subprocess.Popen([python_bin, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"], cwd=str(backend_dir))
+        processes.append(p_back)
+
+        # 3. Next.js frontend
+        node_pkg = "bun" if shutil.which("bun") else "npm"
+        p_front = subprocess.Popen([node_pkg, "run", "start"], cwd=str(ROOT_DIR))
+        processes.append(p_front)
+
+        p_front.wait()
     except KeyboardInterrupt:
-        shutdown_all()
+        log_runner("Shutting down bare-metal processes...")
+    finally:
+        cleanup()
+
+
+def main():
+    args = sys.argv[1:]
+    if "--bare-metal" in args:
+        args.remove("--bare-metal")
+        run_bare_metal_legacy(args)
+    else:
+        run_docker_compose(args)
 
 
 if __name__ == "__main__":

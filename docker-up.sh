@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# OverBranch Self-Host — 1-Click Docker Compose Launcher with Auto-Installer
+# OverBranch Self-Host — Universal Docker Compose Launcher with Auto-Installer
+# ==============================================================================
+# Compatible with: Linux (all distributions) and macOS (Intel & Apple Silicon)
 # ==============================================================================
 
 set -e
@@ -8,13 +10,62 @@ set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
+ACTION="${1:-up}"
+
+# 1. Handle management subcommands that do not need daemon spinup or banners
+case "$ACTION" in
+    down|stop)
+        echo "[INFO] Stopping OverBranch containers..."
+        if docker compose version >/dev/null 2>&1; then
+            exec docker compose down
+        elif command -v docker-compose >/dev/null 2>&1; then
+            exec docker-compose down
+        else
+            echo "[ERROR] Docker Compose not found." >&2
+            exit 1
+        fi
+        ;;
+    logs)
+        shift 2>/dev/null || true
+        if docker compose version >/dev/null 2>&1; then
+            exec docker compose logs -f "$@"
+        elif command -v docker-compose >/dev/null 2>&1; then
+            exec docker-compose logs -f "$@"
+        else
+            echo "[ERROR] Docker Compose not found." >&2
+            exit 1
+        fi
+        ;;
+    ps|status)
+        if docker compose version >/dev/null 2>&1; then
+            exec docker compose ps
+        elif command -v docker-compose >/dev/null 2>&1; then
+            exec docker-compose ps
+        else
+            echo "[ERROR] Docker Compose not found." >&2
+            exit 1
+        fi
+        ;;
+    restart)
+        echo "[INFO] Restarting OverBranch containers..."
+        if docker compose version >/dev/null 2>&1; then
+            exec docker compose restart
+        elif command -v docker-compose >/dev/null 2>&1; then
+            exec docker-compose restart
+        else
+            echo "[ERROR] Docker Compose not found." >&2
+            exit 1
+        fi
+        ;;
+esac
+
 echo "============================================================"
 echo "          OverBranch Self-Host Docker Launcher"
 echo "    100% Local • Zero API Keys • SQLite • Gemini Web2API"
 echo "============================================================"
 echo ""
 
-# 1. Detect and install Docker if not present
+# 2. Detect and install Docker if not present
 if ! command -v docker >/dev/null 2>&1; then
     echo "[INFO] Docker was not found on your system."
     OS_TYPE="$(uname -s)"
@@ -66,7 +117,7 @@ if ! command -v docker >/dev/null 2>&1; then
     esac
 fi
 
-# 2. Determine Docker Compose binary/plugin
+# 3. Determine Docker Compose binary/plugin
 if docker compose version >/dev/null 2>&1; then
     COMPOSE_CMD="docker compose"
 elif command -v docker-compose >/dev/null 2>&1; then
@@ -92,16 +143,17 @@ else
     fi
 fi
 
-# 3. Ensure Docker daemon is running
+# 4. Ensure Docker daemon is running
 if ! docker info >/dev/null 2>&1; then
-    echo "[INFO] Starting Docker service daemon..."
+    echo "[INFO] Docker daemon is not active. Attempting to start Docker service..."
     if [ "$(uname -s)" = "Darwin" ]; then
         open -a Docker 2>/dev/null || true
     else
         if [ "$(id -u)" -eq 0 ]; then
             systemctl start docker 2>/dev/null || service docker start 2>/dev/null || true
         elif command -v sudo >/dev/null 2>&1; then
-            sudo systemctl start docker 2>/dev/null || sudo service docker start 2>/dev/null || true
+            echo "[INFO] Starting Docker service (sudo password may be required)..."
+            sudo systemctl start docker || sudo service docker start || true
         fi
     fi
 
@@ -113,12 +165,42 @@ if ! docker info >/dev/null 2>&1; then
             break
         fi
     done
+
+    if ! docker info >/dev/null 2>&1; then
+        echo "[ERROR] Could not connect to Docker daemon. Please ensure Docker is running and rerun:" >&2
+        echo "  sudo systemctl start docker   (Linux)" >&2
+        echo "  or start Docker Desktop       (macOS / Windows)" >&2
+        exit 1
+    fi
 fi
 
-# 4. Start OverBranch via Docker Compose
-echo ""
-echo "[INFO] Starting OverBranch via Docker Compose ($COMPOSE_CMD up -d)..."
-$COMPOSE_CMD up -d
+# 5. Prepare required local files and directories (prevents Docker directory-mount bug)
+if [ -d "$DIR/overbranch.db" ]; then
+    echo "[WARN] Detected 'overbranch.db' as a directory. Correcting to SQLite database file..."
+    rm -rf "$DIR/overbranch.db"
+fi
+if [ ! -f "$DIR/overbranch.db" ]; then
+    touch "$DIR/overbranch.db"
+fi
+mkdir -p "$DIR/uploads"
+
+# 6. Execute Docker Compose
+case "$ACTION" in
+    build)
+        echo "[INFO] Building and starting OverBranch via Docker Compose ($COMPOSE_CMD up --build -d)..."
+        shift 2>/dev/null || true
+        $COMPOSE_CMD up --build -d "$@"
+        ;;
+    up|start)
+        shift 2>/dev/null || true
+        echo "[INFO] Starting OverBranch via Docker Compose ($COMPOSE_CMD up -d)..."
+        $COMPOSE_CMD up -d "$@"
+        ;;
+    *)
+        echo "[INFO] Starting OverBranch via Docker Compose ($COMPOSE_CMD up -d)..."
+        $COMPOSE_CMD up -d "$@"
+        ;;
+esac
 
 echo ""
 echo "============================================================"
@@ -130,6 +212,12 @@ echo ""
 echo "  • Web Editor Workspace:  http://localhost:3000"
 echo "  • TeX Engine API:        http://localhost:8000"
 echo "  • Gemini Web2API Proxy:  http://localhost:8081"
+echo "============================================================"
+echo ""
+echo "  Management commands:"
+echo "    ./docker-up.sh stop     (or ./run.sh stop)    - Stop containers"
+echo "    ./docker-up.sh logs     (or ./run.sh logs)    - View container logs"
+echo "    ./docker-up.sh restart  (or ./run.sh restart) - Restart services"
 echo "============================================================"
 echo ""
 

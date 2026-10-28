@@ -9,23 +9,23 @@ services:
     container_name: overbranch-selfhost
     restart: unless-stopped
     ports:
-      - "3000:3000"
-      - "8000:8000"
-      - "8081:8081"
+      - "${PORT:-3000}:3000"
+      - "${BACKEND_PORT:-8000}:8000"
+      - "${WEB2API_PORT:-8081}:8081"
     environment:
       - PORT=3000
       - HOSTNAME=0.0.0.0
-      - DATABASE_URL=file:/app/overbranch.db
-      - NEXT_PUBLIC_APP_URL=http://localhost:3000
-      - NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
-      - BACKEND_URL=http://localhost:8000
-      - WEB2API_BASE_URL=http://localhost:8081/v1
-      - GEMINI_WEB2API_BASE_URL=http://localhost:8081/v1
-      - WEB2API_API_KEY=local
-      - GEMINI_WEB2API_API_KEY=local
-      - BETTER_AUTH_SECRET=selfhost-local-sample-secret-overbranch-2026
-      - BETTER_AUTH_URL=http://localhost:3000
-      - NEXT_PUBLIC_ZERO_AUTH=true
+      - DATABASE_URL=${DATABASE_URL:-file:/app/overbranch.db}
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8000}
+      - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
+      - WEB2API_BASE_URL=${WEB2API_BASE_URL:-http://localhost:8081/v1}
+      - GEMINI_WEB2API_BASE_URL=${GEMINI_WEB2API_BASE_URL:-http://localhost:8081/v1}
+      - WEB2API_API_KEY=${WEB2API_API_KEY:-local}
+      - GEMINI_WEB2API_API_KEY=${GEMINI_WEB2API_API_KEY:-local}
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-selfhost-local-sample-secret-overbranch-2026}
+      - BETTER_AUTH_URL=${BETTER_AUTH_URL:-http://localhost:3000}
+      - NEXT_PUBLIC_ZERO_AUTH=${NEXT_PUBLIC_ZERO_AUTH:-true}
     volumes:
       - ./uploads:/app/uploads
       - ./overbranch.db:/app/overbranch.db
