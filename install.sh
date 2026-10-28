@@ -15,6 +15,15 @@
 
 set -eo pipefail
 
+# Quick Docker entrypoint
+if [ "$1" = "--docker" ] || [ "${DOCKER:-0}" = "1" ]; then
+    DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$DIR/docker-up.sh" ]; then
+        chmod +x "$DIR/docker-up.sh"
+        exec "$DIR/docker-up.sh"
+    fi
+fi
+
 # ANSI Colors
 if [ -t 1 ]; then
     CYAN='\033[0;36m'

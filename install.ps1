@@ -5,12 +5,27 @@
 #   irm https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/install.ps1 | iex
 # ==============================================================================
 
+param(
+    [switch]$Docker
+)
+
 $ErrorActionPreference = "Stop"
 
 function Write-Cyan { param([string]$msg) Write-Host "[INFO] $msg" -ForegroundColor Cyan }
 function Write-Green { param([string]$msg) Write-Host "[OK] $msg" -ForegroundColor Green }
 function Write-Yellow { param([string]$msg) Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 function Write-Red { param([string]$msg) Write-Host "[ERROR] $msg" -ForegroundColor Red }
+
+if ($Docker -or ($args -contains "--docker")) {
+    $scriptDir = $PSScriptRoot
+    if (-not $scriptDir -or -not (Test-Path "$scriptDir\docker-up.ps1")) {
+        $scriptDir = "$HOME\overbranch-selfhost"
+    }
+    if (Test-Path "$scriptDir\docker-up.ps1") {
+        & "$scriptDir\docker-up.ps1"
+        exit $LASTEXITCODE
+    }
+}
 
 Write-Host @"
   ___                  ____                       _     

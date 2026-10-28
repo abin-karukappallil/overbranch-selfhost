@@ -42,9 +42,15 @@ docker compose up -d
 > ### **Access overbranch through localhost:3000**
 > Direct Link: **[http://localhost:3000](http://localhost:3000)**
 
-### ⚡ 1-Click Launcher Scripts:
+### ⚡ 1-Click Launcher Scripts (Auto-Installs Docker If Missing):
 - **Windows (Double-Click)**: `docker-up.bat` (or PowerShell: `.\docker-up.ps1`)
 - **Linux / macOS**: `./docker-up.sh` (or `./start.sh --docker`)
+
+> 💡 **Automatic Docker Installation**:  
+> If Docker is not installed on your system, running any of the 1-click launcher scripts will **automatically detect your OS and install Docker for you**:
+> - **Windows**: Installs Docker Desktop via `winget` (or direct silent installer) and starts the daemon.
+> - **Linux**: Installs Docker Engine via the official Docker installer (`get.docker.com`), enables the service, and configures user permissions.
+> - **macOS**: Installs Docker Desktop via Homebrew Cask or official DMG and launches the app.
 
 ### 📦 Included Compiler & Dockerfile Packages (From Parent App):
 - **Full LaTeX Engine Suite**: `pdflatex`, `xelatex`, `lualatex`, `latexmk`, and `biber`.

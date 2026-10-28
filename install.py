@@ -22,6 +22,8 @@ import zipfile
 import platform
 import subprocess
 import urllib.request
+import tempfile
+import time
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -644,13 +646,188 @@ def check_or_install_latex():
     return False
 
 
+# ---------------------------------------------------------------------------
+# Docker toolchain & Auto-Installer
+# ---------------------------------------------------------------------------
+
+def check_or_install_docker() -> bool:
+    """Detects if Docker is installed. If missing, automatically installs Docker for the respective OS."""
+    docker_bin = shutil.which("docker")
+    if docker_bin:
+        log_success(f"Docker is already installed: {docker_bin}")
+        _ensure_docker_daemon_running()
+        return True
+
+    system = platform.system().lower()
+    log_info(f"Docker is not detected on PATH. Installing Docker automatically for {platform.system()}...")
+
+    if system == "windows":
+        std_bin = Path("C:/Program Files/Docker/Docker/resources/bin/docker.exe")
+        if std_bin.exists():
+            os.environ["PATH"] = f"{std_bin.parent};{os.environ.get('PATH', '')}"
+            log_success(f"Found Docker at: {std_bin}")
+            _ensure_docker_daemon_running()
+            return True
+
+        winget = shutil.which("winget")
+        if winget:
+            log_info("Installing Docker Desktop via Windows Package Manager (winget)...")
+            try:
+                res = subprocess.run(
+                    [winget, "install", "--id", "Docker.DockerDesktop", "-e", "--source", "winget",
+                     "--accept-package-agreements", "--accept-source-agreements", "--silent"],
+                    check=False
+                )
+                if res.returncode == 0 or std_bin.exists():
+                    os.environ["PATH"] = f"{std_bin.parent};{os.environ.get('PATH', '')}"
+                    log_success("Docker Desktop installed successfully via winget.")
+                    _ensure_docker_daemon_running()
+                    return True
+            except Exception as e:
+                log_warn(f"winget error: {e}")
+
+        # Fallback to direct installer download
+        log_info("Downloading official Docker Desktop installer...")
+        installer = Path(tempfile.gettempdir()) / "DockerDesktopInstaller.exe"
+        try:
+            urllib.request.urlretrieve("https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe", installer)
+            log_info("Running silent Docker Desktop installer (this may take 2-3 minutes)...")
+            subprocess.run([str(installer), "install", "--quiet", "--accept-license"], check=True)
+            installer.unlink(missing_ok=True)
+            if std_bin.exists():
+                os.environ["PATH"] = f"{std_bin.parent};{os.environ.get('PATH', '')}"
+                log_success("Docker Desktop installed successfully.")
+                _ensure_docker_daemon_running()
+                return True
+        except Exception as e:
+            log_error(f"Failed to install Docker Desktop on Windows: {e}")
+            return False
+
+    elif system == "darwin":
+        brew = shutil.which("brew")
+        if brew:
+            log_info("Installing Docker Desktop via Homebrew Cask...")
+            try:
+                subprocess.run([brew, "install", "--cask", "docker"], check=True)
+                log_success("Docker Desktop installed via Homebrew.")
+                _ensure_docker_daemon_running()
+                return True
+            except Exception as e:
+                log_warn(f"brew error: {e}")
+
+        arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "amd64"
+        dmg_path = Path("/tmp/Docker.dmg")
+        try:
+            log_info(f"Downloading Docker Desktop DMG ({arch})...")
+            urllib.request.urlretrieve(f"https://desktop.docker.com/mac/main/{arch}/Docker.dmg", dmg_path)
+            subprocess.run(["hdiutil", "attach", str(dmg_path), "-nobrowse", "-quiet"], check=True)
+            subprocess.run(["cp", "-R", "/Volumes/Docker/Docker.app", "/Applications/"], check=True)
+            subprocess.run(["hdiutil", "detach", "/Volumes/Docker", "-quiet"], check=False)
+            dmg_path.unlink(missing_ok=True)
+            log_success("Docker Desktop installed to /Applications/Docker.app")
+            _ensure_docker_daemon_running()
+            return True
+        except Exception as e:
+            log_error(f"Failed to install Docker on macOS: {e}")
+            return False
+
+    elif system == "linux":
+        curl = shutil.which("curl") or shutil.which("wget")
+        if curl:
+            log_info("Installing Docker Engine via official get.docker.com script...")
+            cmd = "curl -fsSL https://get.docker.com | sh" if shutil.which("curl") else "wget -qO- https://get.docker.com | sh"
+            if not _is_root() and shutil.which("sudo"):
+                cmd = "curl -fsSL https://get.docker.com | sudo sh" if shutil.which("curl") else "wget -qO- https://get.docker.com | sudo sh"
+            try:
+                subprocess.run(cmd, shell=True, check=True)
+                log_success("Docker Engine installed successfully.")
+                _ensure_docker_daemon_running()
+                return True
+            except Exception as e:
+                log_warn(f"get.docker.com error: {e}")
+
+        for mgr, update, install in [
+            ("apt-get", ["apt-get", "update"], ["apt-get", "install", "-y", "docker.io", "docker-compose-plugin"]),
+            ("pacman", [], ["pacman", "-Sy", "--noconfirm", "docker", "docker-compose"]),
+            ("dnf", [], ["dnf", "install", "-y", "docker-ce", "docker-compose-plugin"]),
+            ("apk", [], ["apk", "add", "--no-cache", "docker", "docker-cli-compose"]),
+        ]:
+            if shutil.which(mgr):
+                log_info(f"Installing Docker using {mgr}...")
+                prefix = [] if _is_root() or not shutil.which("sudo") else ["sudo"]
+                try:
+                    if update:
+                        subprocess.run(prefix + update, check=False)
+                    subprocess.run(prefix + install, check=True)
+                    log_success(f"Docker installed via {mgr}.")
+                    _ensure_docker_daemon_running()
+                    return True
+                except Exception as e:
+                    log_warn(f"{mgr} error: {e}")
+
+    return bool(shutil.which("docker"))
+
+
+def _ensure_docker_daemon_running():
+    """Starts the Docker daemon if not currently active."""
+    system = platform.system().lower()
+    try:
+        res = subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        if res.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    log_info("Starting Docker service daemon...")
+    if system == "windows":
+        app = Path("C:/Program Files/Docker/Docker/Docker Desktop.exe")
+        if app.exists():
+            subprocess.Popen([str(app)], shell=True)
+    elif system == "darwin":
+        subprocess.run(["open", "-a", "Docker"], check=False)
+    elif system == "linux":
+        prefix = [] if _is_root() or not shutil.which("sudo") else ["sudo"]
+        subprocess.run(prefix + ["systemctl", "start", "docker"], check=False)
+
+    for _ in range(15):
+        time.sleep(2)
+        try:
+            if subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0:
+                log_success("Docker daemon is active and responsive.")
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="OverBranch Self-Host Installer")
+    parser.add_argument("--docker", action="store_true", help="Install Docker for host OS and setup Docker stack")
+    args, _ = parser.parse_known_args()
+
     print(f"""{BOLD}{GREEN}
 ============================================================
        OverBranch Self-Host Installation & Setup
        100% Local TeX Editor • Local Gemini Web2API • SQLite
 ============================================================{RESET}
 """)
+    if args.docker:
+        check_or_install_docker()
+        print(f"""
+{BOLD}{GREEN}============================================================
+   Docker Environment Installed & Ready!
+============================================================{RESET}
+
+{BOLD}{CYAN}>>> Access overbranch through localhost:3000 <<<{RESET}
+
+To start OverBranch via Docker Compose:
+  {BOLD}docker compose up -d{RESET}
+  or double-click:
+  {BOLD}docker-up.bat{RESET} (Windows) / {BOLD}./docker-up.sh{RESET} (Linux/macOS)
+""")
+        return
+
     # 1. Download Gemini Web2API binary
     download_gemini_web2api()
 
