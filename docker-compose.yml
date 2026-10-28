@@ -1,0 +1,38 @@
+services:
+  overbranch:
+    image: ${DOCKER_IMAGE:-overbranch-selfhost:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TEX_BASE: ${TEX_BASE:-texlive-base}
+    container_name: overbranch-selfhost
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      - "8000:8000"
+      - "8081:8081"
+    environment:
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - DATABASE_URL=file:/app/overbranch.db
+      - NEXT_PUBLIC_APP_URL=http://localhost:3000
+      - NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+      - BACKEND_URL=http://localhost:8000
+      - WEB2API_BASE_URL=http://localhost:8081/v1
+      - GEMINI_WEB2API_BASE_URL=http://localhost:8081/v1
+      - WEB2API_API_KEY=local
+      - GEMINI_WEB2API_API_KEY=local
+      - BETTER_AUTH_SECRET=selfhost-local-sample-secret-overbranch-2026
+      - BETTER_AUTH_URL=http://localhost:3000
+      - NEXT_PUBLIC_ZERO_AUTH=true
+    volumes:
+      - ./uploads:/app/uploads
+      - ./overbranch.db:/app/overbranch.db
+      - ./backend/templates:/app/backend/templates:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3

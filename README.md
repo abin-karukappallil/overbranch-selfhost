@@ -30,6 +30,38 @@
 
 ---
 
+## 🐳 Instant Docker Compose Launch (1-Click • Zero Configuration)
+
+Run OverBranch Self-Host instantly inside Docker with the complete, **non-breakable LaTeX compiler**, all typography/fonts, embedded Gemini Web2API, and zero configuration.
+
+### ⚡ 1-Click Command:
+```bash
+docker compose up -d
+```
+
+> ### **Access overbranch through localhost:3000**
+> Direct Link: **[http://localhost:3000](http://localhost:3000)**
+
+### ⚡ 1-Click Launcher Scripts:
+- **Windows (Double-Click)**: `docker-up.bat` (or PowerShell: `.\docker-up.ps1`)
+- **Linux / macOS**: `./docker-up.sh` (or `./start.sh --docker`)
+
+### 📦 Included Compiler & Dockerfile Packages (From Parent App):
+- **Full LaTeX Engine Suite**: `pdflatex`, `xelatex`, `lualatex`, `latexmk`, and `biber`.
+- **All Document Classes & Packages**: `beamer` (with metropolis theme), `tikz`/`pgf`, `pgfplots`, `amsmath`, `mathtools`, `siunitx`, `newtx`, `tcolorbox`, `titlesec`, `fancyhdr`, `booktabs`, `caption`, `minted` (with Pygments syntax highlighter), and `glossaries`.
+- **Complete Font Coverage Gate**:
+  - **Metric-Compatible Fonts**: Carlito (Calibri), Caladea (Cambria), Arimo (Arial), Tinos (Times New Roman), Cousine (Courier New), Liberation, and DejaVu.
+  - **TeX Typography**: TeX Gyre (Termes, Heros, Pagella, Bonum, Schola, Cursor), Latin Modern, EB Garamond, Fira Sans & Fira Math, Source Serif 4 & Source Sans 3, Roboto, Lato, Inconsolata, IBM Plex, and STIX Two.
+  - **CJK & Global Script Coverage**: Noto CJK, IPA Gothic/Mincho, Nanum, WQY Microhei/Zenhei, Arphic Uming/Ukai, Indic (Rachana, Meera, Lohit), Arabic (Amiri), Thai (TLWG), and SIL families.
+  - **Microsoft Core Fonts**: Preseeded EULA acceptance with retry resilience (`ttf-mscorefonts-installer`).
+- **Zero Configuration**:
+  - Automatically launches **Gemini Web2API** on port `8081` (no cloud keys needed).
+  - Automatically initializes **SQLite Schema & Vector DB** (`overbranch.db`).
+  - Automatically launches **FastAPI TeX Backend** on port `8000`.
+  - Automatically launches **Next.js Web App** on port `3000`.
+
+---
+
 ## 🚀 1-Line Quick Installation (Lightning Install)
 
 Install and setup OverBranch Self-Host completely with a single command from anywhere:

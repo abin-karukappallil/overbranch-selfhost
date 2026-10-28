@@ -37,11 +37,16 @@ fi
 # 3. Enter directory and run the stack
 cd "$WORK_DIR"
 
+if [ "$1" = "--docker" ] || [ "${DOCKER:-0}" = "1" ]; then
+    chmod +x ./docker-up.sh
+    exec ./docker-up.sh
+fi
+
 if command -v python3 >/dev/null 2>&1; then
     exec python3 run.py "$@"
 elif command -v python >/dev/null 2>&1; then
     exec python run.py "$@"
 else
-    echo "Error: Python 3 is required to run OverBranch Self-Host." >&2
+    echo "Error: Python 3 or Docker is required to run OverBranch Self-Host." >&2
     exit 1
 fi

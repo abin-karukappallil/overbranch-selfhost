@@ -253,6 +253,8 @@ Write-Host @"
    OverBranch Self-Host Installation Succeeded!
 ============================================================
 
+   Access overbranch through localhost:3000
+
 All services are self-contained with zero .env configuration:
   • Web Frontend:    http://localhost:3000
   • TeX Engine API:  http://localhost:8000
@@ -261,6 +263,9 @@ All services are self-contained with zero .env configuration:
 
 To start OverBranch anytime from any terminal, simply run:
   overbranch
+
+Or via Docker Compose (1-Click, Zero Config):
+  docker compose up -d   (or double-click: docker-up.bat)
 
 Or from this folder directly:
   cd $WorkDir

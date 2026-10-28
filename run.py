@@ -345,6 +345,8 @@ def main():
        OverBranch Self-Host is running successfully!
 ============================================================{RESET}
 
+{BOLD}{CYAN}>>> Access overbranch through localhost:3000 <<<{RESET}
+
   {BOLD}• Web Editor Workspace:{RESET}  {CYAN}http://localhost:3000{RESET}
   {BOLD}• TeX Engine API:{RESET}        {BLUE}http://localhost:8000{RESET}
   {BOLD}• Gemini Web2API Proxy:{RESET}  {MAGENTA}http://localhost:8081{RESET}

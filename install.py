@@ -672,6 +672,8 @@ def main():
    OverBranch Self-Host Installation Complete!
 ============================================================{RESET}
 
+{BOLD}{CYAN}>>> Access overbranch through localhost:3000 <<<{RESET}
+
 To run the entire app (Frontend + Backend + Gemini Web2API):
 
   {BOLD}python run.py{RESET}
@@ -679,10 +681,14 @@ To run the entire app (Frontend + Backend + Gemini Web2API):
   {BOLD}./run.sh{RESET}   (Linux / macOS)
   {BOLD}run.bat{RESET}    (Windows)
 
+Or run with Docker Compose (1-Click, Zero Configuration):
+  {BOLD}docker compose up -d{RESET}
+  (or use: {BOLD}docker-up.bat{RESET} / {BOLD}./docker-up.sh{RESET})
+
 Access points once running:
-  • Web Editor:   {CYAN}http://localhost:3000{RESET}
-  • TeX Backend:  {CYAN}http://localhost:8000{RESET}
-  • Gemini Proxy: {CYAN}http://localhost:8081{RESET}
+  • Web Editor Workspace:  {CYAN}http://localhost:3000{RESET}
+  • TeX Engine API:        {CYAN}http://localhost:8000{RESET}
+  • Gemini Web2API Proxy:  {CYAN}http://localhost:8081{RESET}
 """)
 
 if __name__ == "__main__":
