@@ -40,6 +40,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize SQLite schema: {e}")
 
+    # Prime TeX font/format caches off the request path and log status
+    try:
+        import tex_health
+        asyncio.get_running_loop().run_in_executor(None, tex_health.warm_up)
+    except Exception as e:
+        logger.warning(f"Could not start TeX warmup: {e}")
+
     yield
 
     logger.info("OverBranch TeX Engine API shutting down gracefully...")
@@ -55,6 +62,14 @@ async def lifespan(app: FastAPI):
             compile_queue._executor.shutdown(wait=False, cancel_futures=True)
     except Exception as e:
         logger.warning(f"Error shutting down compile executor: {e}")
+
+    try:
+        import pdf2latex.llm as pdf_llm
+        if getattr(pdf_llm, "_pool", None) is not None:
+            pdf_llm._pool.shutdown(wait=False, cancel_futures=True)
+            pdf_llm._pool = None
+    except Exception as e:
+        logger.warning(f"Error shutting down pdf2latex llm pool: {e}")
 
     logger.info("OverBranch Self-Host shutdown complete.")
 
@@ -139,6 +154,13 @@ def health_check():
     }
 
 
+@app.get("/api/health/tex")
+async def tex_health_check(refresh: bool = False):
+    """Builds a one-line document with each engine and reports timings (cached for 60s)."""
+    import tex_health
+    return await asyncio.to_thread(tex_health.check, 120.0, refresh)
+
+
 from fastapi import Depends
 from auth import get_current_user_or_guest, verify_project_ownership_or_member
 from rate_limiter import RateLimiter
@@ -180,6 +202,14 @@ async def compile_endpoint(
             raise
 
     code = req.latex_code if req.latex_code.strip() else req.latex
+    active_file = (req.active_file or "").strip() or None
+    active_text = req.active_text if active_file else None
+    if active_file and active_text is None:
+        active_text = code
+    if active_file and not (req.project_id or "").strip():
+        code = active_text if active_text is not None else code
+        active_file = active_text = None
+
     images_dict = [{"filename": img.filename, "data": img.data} for img in (req.images or [])]
     files_dict = [{"filename": f.filename, "data": f.data} for f in (req.files or [])]
 
@@ -193,9 +223,14 @@ async def compile_endpoint(
             images=images_dict,
             files=files_dict,
             project_id=req.project_id,
-            active_file=req.active_file,
-            active_text=req.active_text,
+            active_file=active_file,
+            active_text=active_text,
         )
+        if isinstance(result, dict) and result.get("success") is not True and not (result.get("error_log") or "").strip():
+            result["error_log"] = (
+                "Compilation failed without a TeX log (the engine produced no output or was cut off by the "
+                "compile timeout). Check GET /api/health/tex on the server for the toolchain status."
+            )
         return result
     except CompileQueueFullError as qfe:
         return JSONResponse(
@@ -244,8 +279,8 @@ async def synctex_backward_endpoint(
 
     res = backward_lookup(
         project_id=req.project_id,
-            active_file=req.active_file,
-            active_text=req.active_text,
+        active_file=req.active_file,
+        active_text=req.active_text,
         page=req.page,
         x=req.x,
         y=req.y,
@@ -280,8 +315,8 @@ async def synctex_forward_endpoint(
 
     res = forward_lookup(
         project_id=req.project_id,
-            active_file=req.active_file,
-            active_text=req.active_text,
+        active_file=req.active_file,
+        active_text=req.active_text,
         file_path=req.file,
         line=req.line,
         column=req.column or 1,

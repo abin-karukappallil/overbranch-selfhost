@@ -133,6 +133,22 @@ def start_service(name: str, cmd: list[str], cwd: Path, color: str) -> subproces
     """Starts a subprocess with piped outputs and cross-platform process isolation."""
     log_runner(f"Starting {name} ({' '.join(cmd)})...")
     
+    # Hardcoded sample environment defaults for 100% zero-configuration self-hosting
+    service_env = os.environ.copy()
+    service_env.setdefault("PORT", "3000" if name == "Frontend" else "8000")
+    service_env.setdefault("DATABASE_URL", "sqlite:///overbranch.db")
+    service_env.setdefault("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
+    service_env.setdefault("NEXT_PUBLIC_BACKEND_URL", "http://localhost:8000")
+    service_env.setdefault("BACKEND_URL", "http://localhost:8000")
+    service_env.setdefault("WEB2API_BASE_URL", "http://localhost:8081/v1")
+    service_env.setdefault("GEMINI_WEB2API_BASE_URL", "http://localhost:8081/v1")
+    service_env.setdefault("WEB2API_API_KEY", "local")
+    service_env.setdefault("GEMINI_WEB2API_API_KEY", "local")
+    service_env.setdefault("AUTH_SECRET", "selfhost-local-sample-secret-overbranch-2026")
+    service_env.setdefault("NEXT_PUBLIC_ZERO_AUTH", "true")
+    service_env.setdefault("LLM_IDLE_TIMEOUT", "120")
+    service_env.setdefault("LLM_ATTEMPT_WALL_CAP", "300")
+
     # Process group handling for clean termination
     kwargs = {
         "stdout": subprocess.PIPE,
@@ -140,6 +156,7 @@ def start_service(name: str, cmd: list[str], cwd: Path, color: str) -> subproces
         "text": True,
         "bufsize": 1,
         "cwd": str(cwd),
+        "env": service_env,
     }
 
     if platform.system().lower() == "windows":
