@@ -9,12 +9,12 @@
 
 **Linux / macOS / WSL / Git Bash**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/overbranch/overbranch-selfhost/main/install.sh | bash
 ```
 
 **Windows (PowerShell)**
 ```powershell
-irm https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/overbranch/overbranch-selfhost/main/install.ps1 | iex
 ```
 
 Then open **<http://localhost:3000>**.

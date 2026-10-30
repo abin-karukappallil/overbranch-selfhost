@@ -2,7 +2,7 @@
 # ==============================================================================
 # OverBranch Self-Host - installer and `overbranch` CLI (Linux, macOS, WSL, Git Bash)
 # ==============================================================================
-#   curl -fsSL https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/overbranch/overbranch-selfhost/main/install.sh | bash
 #
 # Installs Docker if missing, pulls the prebuilt image and starts it. No
 # clone is needed: only docker-compose.yml is fetched into ~/.overbranch.
@@ -12,8 +12,8 @@
 # ==============================================================================
 set -eo pipefail
 
-RAW="${OVERBRANCH_RAW_URL:-https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main}"
-REPO_URL="${OVERBRANCH_REPO_URL:-https://github.com/abin-karukappallil/overbranch-selfhost.git}"
+RAW="${OVERBRANCH_RAW_URL:-https://raw.githubusercontent.com/overbranch/overbranch-selfhost/main}"
+REPO_URL="${OVERBRANCH_REPO_URL:-https://github.com/overbranch/overbranch-selfhost.git}"
 URL="http://localhost:${PORT:-3000}"
 
 if [ -t 1 ]; then C='\033[0;36m'; G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; Z='\033[0m'; else C=; G=; Y=; R=; Z=; fi

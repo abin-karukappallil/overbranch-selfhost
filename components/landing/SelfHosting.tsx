@@ -6,10 +6,10 @@ import { Check, Copy, Terminal } from "lucide-react";
 export function LandingSelfHosting() {
   const [copied, setCopied] = useState(false);
 
-  const commandText = `$ curl -fsSL https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/install.sh | bash\n$ OverBranch Running\n  http://localhost:3000 // ONLINE`;
+  const commandText = `$ curl -fsSL https://raw.githubusercontent.com/overbranch/overbranch-selfhost/main/install.sh | bash\n$ OverBranch Running\n  http://localhost:3000 // ONLINE`;
 
   const copyCommand = () => {
-    navigator.clipboard.writeText("curl -fsSL https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/install.sh | bash");
+    navigator.clipboard.writeText("curl -fsSL https://raw.githubusercontent.com/overbranch/overbranch-selfhost/main/install.sh | bash");
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

@@ -10,4 +10,4 @@ services:
       dockerfile: Dockerfile
       args:
         # Keep in step with docker/texlive-base.lock (CI asserts they agree).
-        TEX_BASE: ${TEX_BASE:-ghcr.io/abin-karukappallil/overbranch-texlive:2026}
+        TEX_BASE: ${TEX_BASE:-ghcr.io/overbranch/overbranch-texlive:2026}

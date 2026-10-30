@@ -1,7 +1,7 @@
 # ==============================================================================
 # OverBranch Self-Host - installer and `overbranch` CLI for Windows (PowerShell)
 # ==============================================================================
-#   irm https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/overbranch/overbranch-selfhost/main/install.ps1 | iex
 #
 # Installs Docker Desktop if missing, pulls the prebuilt image and starts it.
 # No clone is needed: only docker-compose.yml is fetched into ~\.overbranch.
@@ -13,8 +13,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Raw = if ($env:OVERBRANCH_RAW_URL) { $env:OVERBRANCH_RAW_URL } else { "https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main" }
-$RepoUrl = "https://github.com/abin-karukappallil/overbranch-selfhost.git"
+$Raw = if ($env:OVERBRANCH_RAW_URL) { $env:OVERBRANCH_RAW_URL } else { "https://raw.githubusercontent.com/overbranch/overbranch-selfhost/main" }
+$RepoUrl = "https://github.com/overbranch/overbranch-selfhost.git"
 $Port = if ($env:PORT) { $env:PORT } else { "3000" }
 $Url = "http://localhost:$Port"
 

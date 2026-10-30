@@ -11,7 +11,7 @@
 # `docker build .`.
 # ============================================================
 
-ARG TEX_BASE=ghcr.io/abin-karukappallil/overbranch-texlive:2026
+ARG TEX_BASE=ghcr.io/overbranch/overbranch-texlive:2026
 FROM ${TEX_BASE} AS app
 
 ENV DEBIAN_FRONTEND=noninteractive
