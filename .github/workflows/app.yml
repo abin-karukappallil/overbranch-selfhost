@@ -118,7 +118,8 @@ jobs:
           done
           curl -sf http://localhost:8000/api/health
           curl -sfo /dev/null http://localhost:3000
-          docker exec ob sh -c 'pgrep -f uvicorn && pgrep -f gemini-web2api'
+          # procps is not in the image: scan /proc (the [x] trick keeps grep from matching itself)
+          docker exec ob sh -c 'grep -qa "[u]vicorn" /proc/[0-9]*/cmdline && grep -qa "[g]emini-web2api" /proc/[0-9]*/cmdline'
           docker exec ob sh -c 'echo "$OVERBRANCH_DATA_DIR" | grep -q "^/app/data$" && test -f /app/data/overbranch.db'
           # minted WITHOUT -shell-escape, exactly as backend/compiler.py runs it
           docker exec ob sh -c 'cd /usr/local/share/overbranch/smoke-tests && latexmk -pdf -interaction=nonstopmode mint.tex && test -f mint.pdf'
