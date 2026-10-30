@@ -72,12 +72,17 @@ jobs:
         run: |
           set -euo pipefail
           REF='${{ needs.base.outputs.ref }}'
-          YEAR="$(docker buildx imagetools inspect "$REF" \
-            --format '{{ index .Image.Config.Labels "org.overbranch.texlive" }}')"
-          echo "base TeX Live: $YEAR"
+          if ! docker buildx imagetools inspect "$REF" >/dev/null 2>&1; then
+            echo "::error::TeX base image $REF was not found. Run the 'texlive-base' workflow first (and make the package public or keep this repo linked), then pin it in docker/texlive-base.lock."
+            exit 1
+          fi
+          # For a multi-arch index buildx returns a map keyed by platform.
+          YEAR="$(docker buildx imagetools inspect "$REF" --format '{{json .Image}}' \
+            | jq -r '(if .config then . else (to_entries[0].value) end) | .config.Labels["org.overbranch.texlive"] // empty')"
+          echo "base TeX Live: ${YEAR:-<missing label>}"
           # >= 2025 is a hard requirement: only then is latexminted allow-listed
           # in restricted shell-escape, which is how the app runs minted.
-          test "$YEAR" -ge 2025
+          test -n "$YEAR" && test "$YEAR" -ge 2025
 
       - name: Build and push by digest
         id: build
