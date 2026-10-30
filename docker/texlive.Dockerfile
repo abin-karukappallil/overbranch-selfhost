@@ -8,16 +8,24 @@
 # built ONCE and every app deploy reuses the cached layers instead of
 # re-shipping ~5 GB of TeX.
 #
-# Build (from the repo root):
-#   docker build -f docker/texlive.Dockerfile -t overbranch-texlive:2026.1 .
-# then build the app image with that tag:
-#   docker build --build-arg TEX_BASE=overbranch-texlive:2026.1 -t overbranch:latest .
+# Published to GHCR by .github/workflows/texlive-base.yml (multi-arch) and
+# pinned for the app image in docker/texlive-base.lock. Self-hosters never
+# build this; they pull the app image, which sits on top of it.
 #
-# Rebuild this image only to move TeX Live years or change the font set;
-# `deploy.sh` does that for you when the tag is missing or --rebuild-tex is given.
+# Stages:
+#   texlive  what ships: system fonts, TeX Live, the font gate.
+#   verify   the smoke compiles. Never shipped; CI builds it first so nothing
+#            is published that failed a compile. It is the LAST stage, so a
+#            plain local `docker build` runs the smoke compiles too.
+#
+# Local build (from the repo root; no CI needed):
+#   docker build -f docker/texlive.Dockerfile -t overbranch-texlive:local .
+#   docker compose -f docker-compose.yml -f docker-compose.texlive.yml up -d --build
+#
+# Rebuild only to move TeX Live years or change the font set.
 # ============================================================
 
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim AS texlive
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -26,6 +34,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 # instead of silently shipping whatever is current. New Overleaf projects
 # compile on the latest TeX Live, so this tracks it.
 ARG TEXLIVE_YEAR=2026
+
+# tlnet only ever serves the CURRENT release. After the next TeX Live ships,
+# point this at the frozen tree (.../historic or tlnet-final) to keep
+# rebuilding this year's base.
+ARG TLNET_URL=https://mirror.ctan.org/systems/texlive/tlnet
+
+# 1 = optional fonts must be present too (CI). 0 = report only (laptops).
+ARG OB_FONT_GATE_STRICT=0
 
 # ============================================================
 # 1. System dependencies + system fonts
@@ -157,7 +173,7 @@ RUN sed -i 's/ main$/ main contrib/' /etc/apt/sources.list.d/debian.sources 2>/d
 RUN set -eux; \
     mkdir -p /tmp/install-tl; \
     cd /tmp/install-tl; \
-    curl -fsSL https://mirror.ctan.org/systems/texlive/tlnet/install-tl-unx.tar.gz \
+    curl -fsSL "${TLNET_URL}/install-tl-unx.tar.gz" \
         -o install-tl-unx.tar.gz; \
     tar -xzf install-tl-unx.tar.gz --strip-components=1; \
     # The installer is only ever the current release, so refuse to continue if
@@ -222,15 +238,26 @@ RUN printf '%s\n' \
 # Fails the build if any font in the CORE set is missing, so a renamed or
 # dropped Debian package is caught here, not by a user document months later.
 COPY docker/check-fonts.sh /usr/local/bin/ob-check-fonts
-RUN chmod +x /usr/local/bin/ob-check-fonts && ob-check-fonts
+RUN chmod +x /usr/local/bin/ob-check-fonts && OB_FONT_GATE_STRICT="${OB_FONT_GATE_STRICT}" ob-check-fonts
+
+# Shipped so runtime diagnostics can reuse the same documents.
+COPY docker/smoke-tests /usr/local/share/overbranch/smoke-tests
+
+LABEL org.overbranch.texlive="${TEXLIVE_YEAR}"
+
 
 # ============================================================
-# 5. Build-time smoke compiles
+# verify — smoke compiles under the REAL runtime flags
 # ============================================================
-# Each runs under the real compile flags. A regression in the TeX install or
-# the font set fails the build instead of a user's compile.
-COPY docker/smoke-tests /usr/local/share/overbranch/smoke-tests
+# backend/compiler.py never passes -shell-escape: it relies on TeX Live's
+# restricted mode. minted therefore only works because TeX Live >= 2025
+# allow-lists `latexminted`. Assert that mechanism, then compile without
+# -shell-escape, so this stage cannot pass on a tree where minted is dead.
+FROM texlive AS verify
 RUN set -eux; cd /usr/local/share/overbranch/smoke-tests; \
+    kpsewhich -var-value shell_escape_commands | tr ',' '\n' | grep -qx latexminted; \
+    test "$(kpsewhich -var-value shell_escape)" = "p"; \
+    command -v makeglossaries makeindex biber bib2gls latexmk synctex pdftotext pdftoppm; \
     echo "== pdflatex + newtx (TS1 metrics) =="; \
     max_print_line=10000 pdflatex -interaction=nonstopmode -halt-on-error pdflatex_newtx.tex; \
     test -f pdflatex_newtx.pdf; \
@@ -249,9 +276,11 @@ RUN set -eux; cd /usr/local/share/overbranch/smoke-tests; \
     echo "== makeindex + glossaries via latexmk =="; \
     latexmk -pdf -interaction=nonstopmode glos.tex; \
     test -f glos.pdf; \
-    echo "== minted under restricted shell-escape =="; \
+    echo "== minted under RESTRICTED shell-escape (runtime parity, no -shell-escape) =="; \
     latexmk -pdf -interaction=nonstopmode mint.tex; \
     test -f mint.pdf; \
+    grep -q 'runsystem(latexminted' mint.log; \
+    ! grep -qi 'invoke LaTeX with the -shell-escape' mint.log; \
     echo "== beamer metropolis (Fira) =="; \
     latexmk -pdf -interaction=nonstopmode deck.tex || \
       xelatex -interaction=nonstopmode -halt-on-error deck.tex; \
@@ -259,5 +288,6 @@ RUN set -eux; cd /usr/local/share/overbranch/smoke-tests; \
     echo "ALL SMOKE COMPILES PASSED"; \
     latexmk -C >/dev/null 2>&1 || true
 
-# A minimal label so the app image and deploy script can assert the base.
-LABEL org.overbranch.texlive="${TEXLIVE_YEAR}"
+# Size report, to decide what to prune (shows in the CI log).
+RUN set -x; du -sh /usr/local/texlive/*/texmf-dist 2>/dev/null || true; \
+    dpkg-query -Wf '${Installed-Size}\t${Package}\n' | sort -rn | head -25

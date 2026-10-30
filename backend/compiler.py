@@ -2394,7 +2394,7 @@ def _compile_latex_impl(
                 primary = "lualatex"
             else:
                 primary = unicode_engine or "pdflatex"
-            if eng_clean == "tectonic":
+            if eng_clean == "tectonic" and shutil.which("tectonic"):
                 cmd_list = [["tectonic", main_name]]
             else:
                 if _needs_latexmk(project_text):

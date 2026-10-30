@@ -1,4 +1,3 @@
 @echo off
-setlocal
-cd /d "%~dp0"
-call "%~dp0docker-up.bat" %*
+rem Compatibility shim: all logic lives in install.ps1.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" %*

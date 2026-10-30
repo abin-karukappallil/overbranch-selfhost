@@ -4,7 +4,7 @@ import * as schema from './schema';
 import path from 'path';
 
 function createDbClient() {
-  const absPath = path.resolve(process.cwd(), 'overbranch.db');
+  const absPath = path.resolve(process.env.OVERBRANCH_DATA_DIR || process.cwd(), 'overbranch.db');
   // Normalize Windows backslashes to forward slashes for the file: URL
   const normalizedPath = absPath.replace(/\\/g, '/');
   const client = createClient({

@@ -1,174 +1,91 @@
 # OverBranch Self-Host Edition
 
-> **100% Local, Single-User, Zero-Configuration Agentic LaTeX IDE**
-> Powered by Docker Compose, Local SQLite with Vector Search & Embedding, and Local Gemini Web2API.
+> **100% local, single-user, zero-configuration agentic LaTeX IDE.**
+> Runs in Docker on Linux, macOS (Intel + Apple Silicon) and Windows. Nothing to install on your machine except Docker.
 
 ---
 
-## 🌟 Key Features of the Self-Host Edition
+## Install
 
-- **100% Containerized via Docker Compose across All Operating Systems**:
-  - OverBranch runs completely inside Docker via `docker compose`.
-  - Zero host clutter: No need to install TeX Live, MiKTeX, Python virtual environments, or Node.js on your host OS.
-  - Consistent and non-breakable compiler runtime whether you are on **Windows, macOS, or Linux** (Ubuntu, Debian, Arch Linux, Fedora, CentOS, etc.).
-- **Zero `.env` Files & Zero Configuration**:
-  - Ready to use immediately with zero configuration. Database paths, local ports, internal service URLs (`http://localhost:3000`, `http://localhost:8000`, `http://localhost:8081`), and AI routing are pre-configured.
-- **Zero API Keys & Zero External Cloud Dependencies**:
-  - Operates completely on your local device.
-  - No OpenAI, Groq, Nvidia, Supabase, or external cloud accounts required.
-- **Embedded Local Gemini Web2API Proxy**:
-  - Automatically runs [gemini-web2api](https://github.com/ikhsan3adi/gemini-web2api) as a lightweight local proxy on port `8081`.
-  - Provides full agentic AI editing and completions.
-- **Local SQLite Database with Vector Search & Embeddings**:
-  - Stores all projects, files, templates, and preferences in a single SQLite database file (`overbranch.db`).
-  - Includes a local semantic vector search engine with dense chunk embeddings and cosine similarity (`/api/sync-file` and `/api/vector-search`).
-- **Single-User Zero-Auth**:
-  - No registration or login needed. You are automatically signed in as **Local Author**.
-  - All dashboard, templates, and editor routes open instantly.
-- **Standalone Editor**:
-  - Monaco LaTeX editor with full syntax highlighting, PDF synchronization (SyncTeX), diagnostics, and auto-compilation (`pdflatex` & `latexmk`).
-
----
-
-## 🐳 Instant Launch via Docker Compose (All OS)
-
-Run OverBranch Self-Host instantly inside Docker with the complete, **non-breakable LaTeX compiler**, all typography/fonts, embedded Gemini Web2API, and zero configuration.
-
-### ⚡ 1-Click Command:
-```bash
-docker compose up -d
-```
-
-> ### **Access overbranch through localhost:3000**
-> Direct Link: **[http://localhost:3000](http://localhost:3000)**
-
----
-
-### ⚡ Cross-Platform Launcher Scripts (Auto-Installs Docker If Missing)
-
-If you prefer using convenient scripts, every launcher script delegates directly to Docker Compose:
-
-- **Linux / macOS**:
-  ```bash
-  ./run.sh
-  # or: ./docker-up.sh
-  ```
-- **Windows (Command Prompt / Double-Click)**:
-  ```cmd
-  run.bat
-  REM or: docker-up.bat
-  ```
-- **Windows (PowerShell)**:
-  ```powershell
-  .\docker-up.ps1
-  ```
-- **Universal Python Launcher**:
-  ```bash
-  python run.py
-  ```
-
-> 💡 **Automatic Docker Installation**:  
-> If Docker is not installed on your system, running any of the 1-click launcher scripts will **automatically detect your OS and install Docker for you**:
-> - **Windows**: Installs Docker Desktop via `winget` (or direct silent installer) and starts the daemon.
-> - **Linux**: Installs Docker Engine via the official Docker installer (`get.docker.com`), enables the service, and configures user permissions.
-> - **macOS**: Installs Docker Desktop via Homebrew Cask or official DMG and launches the app.
-
----
-
-## 🚀 1-Line Quick Installation (Lightning Install)
-
-Install and setup OverBranch Self-Host completely with a single command from anywhere:
-
-### **Linux / macOS / Windows (Git Bash & WSL):**
+**Linux / macOS / WSL / Git Bash**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/install.sh | bash
 ```
 
-### **Windows (PowerShell):**
+**Windows (PowerShell)**
 ```powershell
 irm https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/install.ps1 | iex
 ```
 
-### **What the 1-Line Command Does Automatically:**
-1. **Checks / Installs Docker**: Detects your OS and installs Docker Engine or Docker Desktop if not already installed.
-2. **Clones Repository**: Clones `https://github.com/abin-karukappallil/overbranch-selfhost.git` into `overbranch-selfhost`.
-3. **Prepares Volume Storage**: Prepares SQLite database (`overbranch.db`) and project storage (`uploads/`).
-4. **Installs Global `overbranch` Command**: Creates a global CLI command in your PATH so you can control OverBranch from anywhere.
-5. **Starts via Docker Compose**: Launches the complete containerized stack in detached mode (`docker compose up -d`).
-6. **Opens Browser**: Automatically opens [http://localhost:3000](http://localhost:3000).
+Then open **<http://localhost:3000>**.
 
----
+The installer installs Docker if it is missing, **pulls a prebuilt, CI-tested image** (no compiling on your machine), starts it, and adds an `overbranch` command. The first pull is a few GB (a complete TeX Live and font set); later updates are small.
 
-## 💻 Global CLI Usage
+> **Windows:** a fresh Docker Desktop install needs a restart and a one-time launch to accept its licence and enable WSL2. The installer stops and tells you when that is needed; run `overbranch` again afterwards.
 
-After installation, you can control OverBranch anytime from **any terminal or folder**:
+### Already have Docker?
+
+```bash
+docker compose up -d
+```
+
+`docker-compose.yml` is pull-only: it never silently falls back to a local build.
+
+## The `overbranch` command
 
 | Command | Action |
-| :--- | :--- |
-| `overbranch` | Start OverBranch container in background & open browser |
-| `overbranch stop` (or `overbranch down`) | Stop and shut down OverBranch containers |
-| `overbranch logs` | Tail live container logs from all 3 services |
-| `overbranch restart` | Restart container services |
-| `overbranch status` (or `overbranch ps`) | Show status of running containers |
-| `overbranch build` | Rebuild the Docker image with latest changes |
+| :-- | :-- |
+| `overbranch` | Pull (if needed), start, open the browser |
+| `overbranch stop` | Stop the containers (data is kept) |
+| `overbranch restart` / `status` / `logs` | Restart / show state / follow logs |
+| `overbranch update` | Pull the latest image and restart |
+| `overbranch backup [file.tgz]` | Export your database and projects |
+| `overbranch restore file.tgz` | Replace current data from a backup |
+| `overbranch build` | Build the app image locally instead of pulling (needs `git`) |
 
-*(All launcher scripts `./run.sh`, `run.bat`, and `python run.py` accept these exact same subcommands!)*
+`run.sh`, `run.bat`, `run.py`, `start.sh` and `docker-up.*` still work; they forward to the installers.
 
----
+## Where your data lives
 
-## 📦 What's Inside the Docker Container
+Two Docker named volumes, identical on every OS: `overbranch-data` (SQLite database) and `overbranch-uploads` (projects). They survive `stop`, `update` and image upgrades. Use `overbranch backup` to copy them to a host file. Upgrading from an older install that kept `overbranch.db` beside the compose file? The installer migrates it automatically.
 
-The OverBranch container is fully self-contained and pre-packaged with:
+## Building from source
 
-- **Complete LaTeX Engine Suite**: `pdflatex`, `xelatex`, `lualatex`, `latexmk`, and `biber`.
-- **All Document Classes & Packages**: `beamer` (with metropolis theme), `tikz`/`pgf`, `pgfplots`, `amsmath`, `mathtools`, `siunitx`, `newtx`, `tcolorbox`, `titlesec`, `fancyhdr`, `booktabs`, `caption`, `minted` (with Pygments syntax highlighter), and `glossaries`.
-- **Complete Typography & Fonts**:
-  - **Metric-Compatible Fonts**: Carlito (Calibri), Caladea (Cambria), Arimo (Arial), Tinos (Times New Roman), Cousine (Courier New), Liberation, and DejaVu.
-  - **TeX Typography**: TeX Gyre (Termes, Heros, Pagella, Bonum, Schola, Cursor), Latin Modern, EB Garamond, Fira Sans & Fira Math, Source Serif 4 & Source Sans 3, Roboto, Lato, Inconsolata, IBM Plex, and STIX Two.
-  - **CJK & Global Script Coverage**: Noto CJK, IPA Gothic/Mincho, Nanum, WQY Microhei/Zenhei, Arphic Uming/Ukai, Indic (Rachana, Meera, Lohit), Arabic (Amiri), Thai (TLWG), and SIL families.
-  - **Microsoft Core Fonts**: Preseeded EULA acceptance with retry resilience (`ttf-mscorefonts-installer`).
-- **Zero Configuration Microservices**:
-  - **Next.js Web App** on port `3000` (Monaco editor + PDF preview + dashboard).
-  - **FastAPI TeX Backend** on port `8000` (compilation queue + SyncTeX + vector database).
-  - **Gemini Web2API Proxy** on port `8081` (local agentic AI completions).
+| Goal | Command |
+| :-- | :-- |
+| Rebuild just the app (minutes; still pulls the TeX base) | `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build` |
+| Build everything incl. TeX Live (30-60 min, ~20 GB free) | `docker build -f docker/texlive.Dockerfile -t overbranch-texlive:local .` then `docker compose -f docker-compose.yml -f docker-compose.texlive.yml up -d --build` |
 
-Once running:
-- **Web Editor Workspace:** [http://localhost:3000](http://localhost:3000)
-- **TeX Python Engine API:** [http://localhost:8000](http://localhost:8000)
-- **Gemini Web2API Proxy:** [http://localhost:8081](http://localhost:8081)
+## What's in the image
 
----
+- **TeX Live 2026, scheme-full** from the upstream installer: `pdflatex`, `xelatex`, `lualatex`, `latexmk`, `biber`, `makeindex`, `makeglossaries`, `synctex`, plus every CTAN package (beamer, tikz/pgf, pgfplots, siunitx, newtx, tcolorbox, glossaries, ...). `minted` works under TeX Live's restricted shell-escape via `latexminted`; no special flags needed.
+- **Fonts**: metric-compatible Carlito, Caladea, Arimo, Tinos, Cousine, Liberation, DejaVu; TeX Gyre, Latin Modern, EB Garamond, Fira, Roboto, Lato, Inconsolata, IBM Plex, STIX Two; Noto (incl. CJK), IPA, Nanum, WenQuanYi, Arphic, Indic, Arabic, Thai and SIL families; Microsoft core fonts. Missing proprietary fonts are substituted automatically at compile time.
+- **Services** (one container): Next.js on `3000`, FastAPI TeX engine on `8000`, Gemini Web2API proxy on `8081`.
 
-## 🛠️ Architecture
+Every release is built natively for amd64 and arm64 in CI, which fails if the font gate, any of the engine smoke compiles (including minted without `-shell-escape`), or the runtime health checks fail.
+
+## Troubleshooting
+
+- **"image is not publicly readable yet"**: the maintainer has not made the GHCR package public. Use `overbranch build` meanwhile.
+- **"you appear to be offline"**: connect and retry; an already-pulled image starts offline with `overbranch up`.
+- **Port in use**: `PORT=3100 overbranch` (also `BACKEND_PORT`, `WEB2API_PORT`).
+- **Docker not reachable**: start Docker Desktop and wait for "Engine running".
+
+## Repository layout
 
 ```
-overbranch-selfhost/
-├── docker-compose.yml     # Primary deployment configuration
-├── Dockerfile             # Multi-stage container with complete TeX Live & Fonts
-├── entrypoint.sh          # Container supervisor (starts Web2API, FastAPI & Next.js)
-├── run.sh / run.bat       # Cross-platform Docker Compose runners
-├── docker-up.sh / .bat    # Auto-installer & Docker Compose launcher
-├── run.py                 # Universal Python Docker Compose controller
-├── install.sh / .ps1      # 1-line curl/PowerShell installers
-├── bin/
-│   ├── gemini-web2api     # High-performance local Gemini Go proxy (port 8081)
-│   └── config.json        # Web2API configuration
-├── backend/
-│   ├── main.py            # FastAPI entrypoint (port 8000)
-│   ├── database.py        # Local SQLite asynchronous database engine
-│   ├── vector_db.py       # Semantic vector index & embedding engine
-│   ├── project_storage.py # Disk and SQLite project storage
-│   ├── compiler.py        # pdflatex / latexmk compiler
-│   └── providers/         # Routes AI to local Gemini Web2API (zero cloud keys)
-├── db/                    # Next.js Drizzle SQLite schema & LibSQL client
-├── app/                   # Next.js App Router (port 3000)
-├── components/            # React UI components (Editor, Viewer, Dashboard)
-├── uploads/               # Persistent project disk storage
-└── overbranch.db          # Unified local SQLite database file
+docker-compose.yml          pull-only default (GHCR image + named volumes)
+docker-compose.build.yml    opt-in: build the app image locally
+docker-compose.texlive.yml  opt-in: build the TeX base locally too
+Dockerfile                  app image (FROM the published TeX base)
+docker/texlive.Dockerfile   TeX Live + fonts base, with font gate and smoke compiles
+docker/texlive-base.lock    the base image the app image is built from
+.github/workflows/          CI: multi-arch base + app images -> GHCR
+install.sh / install.ps1    installer and `overbranch` CLI
+entrypoint.sh               starts Web2API, FastAPI and Next.js
+backend/ app/ components/   FastAPI engine and Next.js UI
 ```
 
----
+## License
 
-## 📄 License
-
-Licensed under the [MIT License](LICENSE).
+[MIT](LICENSE)

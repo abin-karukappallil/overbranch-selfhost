@@ -26,9 +26,10 @@ logger = logging.getLogger("database")
 Base = declarative_base()
 
 def get_sqlite_path() -> Path:
-    # Always resolve overbranch.db in overbranch-selfhost root folder
-    parent_root = Path(__file__).resolve().parent.parent
-    p = (parent_root / "overbranch.db").resolve()
+    # OVERBRANCH_DATA_DIR (a Docker volume in the image) wins; otherwise the repo root.
+    data_dir = os.environ.get("OVERBRANCH_DATA_DIR")
+    base = Path(data_dir) if data_dir else Path(__file__).resolve().parent.parent
+    p = (base / "overbranch.db").resolve()
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 

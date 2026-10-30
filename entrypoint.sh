@@ -7,7 +7,17 @@ echo "    100% Local • Zero API Keys • SQLite • Gemini Web2API"
 echo "============================================================"
 
 # 1. Prepare persistent directories
-mkdir -p /app/uploads/projects /app/bin
+DATA_DIR="${OVERBRANCH_DATA_DIR:-/app/data}"
+mkdir -p "$DATA_DIR" /app/uploads/projects /app/bin
+
+# Upgrade path: older installs bind-mounted a single file at /app/overbranch.db.
+# Move it (with its WAL/SHM siblings) into the data volume exactly once.
+if [ -s /app/overbranch.db ] && [ ! -e "$DATA_DIR/overbranch.db" ]; then
+    echo "-> Migrating legacy /app/overbranch.db into $DATA_DIR ..."
+    for ext in "" -wal -shm; do
+        [ -e "/app/overbranch.db$ext" ] && cp -p "/app/overbranch.db$ext" "$DATA_DIR/overbranch.db$ext" || true
+    done
+fi
 
 # 2. Trap termination signals to cleanly shut down background services
 WEB2API_PID=""

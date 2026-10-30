@@ -9,6 +9,10 @@
 # their absence (e.g. a SourceForge outage during the build) is survivable.
 set -u
 
+# 1 (CI) makes OPTIONAL families fatal too, so a transient mirror outage cannot
+# publish an image without e.g. the Microsoft core fonts. INFO is always report-only.
+: "${OB_FONT_GATE_STRICT:=0}"
+
 families() { fc-list : family | tr ',' '\n' | sed 's/^ *//; s/ *$//' | sort -u; }
 ALL="$(families)"
 have() { printf '%s\n' "$ALL" | grep -qiF "$1"; }
@@ -34,11 +38,16 @@ REQUIRED=(
 OPTIONAL=(
   "Times New Roman" "Arial" "Courier New" "Georgia" "Verdana"
   "Trebuchet MS" "Comic Sans MS" "Impact"
-  "Hack" "Fira Code" "JetBrains Mono" "Cantarell" "Symbola"
-  "Source Serif 4" "Source Sans 3" "Source Serif Pro" "Source Sans Pro"
+  "Hack" "Fira Code" "JetBrains Mono" "Cantarell"
   "IPAGothic" "IPAMincho" "NanumGothic" "WenQuanYi Micro Hei"
-  "AR PL UMing CN" "Scheherazade" "Charis SIL" "Gentium" "Padauk"
-  "Lohit Malayalam" "FreeSerif" "FreeSans" "Linux Libertine O"
+  "AR PL UMing CN" "Charis SIL" "Gentium" "Padauk"
+  "FreeSerif" "FreeSans"
+)
+
+# Names that exist only under some packagings/versions; never fatal.
+INFO=(
+  "Source Serif 4" "Source Sans 3" "Source Serif Pro" "Source Sans Pro"
+  "Scheherazade" "Lohit Malayalam" "Linux Libertine O" "Symbola"
 )
 
 miss=0
@@ -54,7 +63,12 @@ echo "============================================================"
 echo "Optional font coverage (reported only)"
 echo "============================================================"
 for f in "${OPTIONAL[@]}"; do
-  if have "$f"; then echo "  ok   $f"; else echo "  --   $f (absent; substitution applies)"; fi
+  if have "$f"; then echo "  ok   $f"
+  elif [ "$OB_FONT_GATE_STRICT" = "1" ]; then echo "  MISS $f (strict)"; miss=$((miss+1))
+  else echo "  --   $f (absent; substitution applies)"; fi
+done
+for f in "${INFO[@]}"; do
+  if have "$f"; then echo "  ok   $f"; else echo "  --   $f (absent; info only)"; fi
 done
 
 echo ""

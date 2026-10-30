@@ -12,7 +12,6 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_APP_URL: "http://localhost:3000",
     NEXT_PUBLIC_BACKEND_URL: "http://localhost:8000",
     BACKEND_URL: "http://localhost:8000",
-    DATABASE_URL: "file:./overbranch.db",
   },
   images: {
     formats: ["image/avif", "image/webp"],

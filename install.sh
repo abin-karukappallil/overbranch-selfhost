@@ -1,145 +1,57 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# OverBranch Self-Host — Universal Docker Compose Installer
+# OverBranch Self-Host - installer and `overbranch` CLI (Linux, macOS, WSL, Git Bash)
 # ==============================================================================
-# Installs and runs OverBranch inside Docker using docker-compose.yml.
-# Compatible with:
-#   - Linux: Ubuntu, Debian, Arch Linux, CentOS, RHEL, Fedora, Alpine, openSUSE
-#   - macOS: Intel (x86_64) & Apple Silicon (ARM64 M1/M2/M3/M4)
-#   - Windows: Git Bash, MSYS2, WSL
-#
-# Usage (One-Line Curl):
 #   curl -fsSL https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main/install.sh | bash
+#
+# Installs Docker if missing, pulls the prebuilt image and starts it. No
+# clone is needed: only docker-compose.yml is fetched into ~/.overbranch.
+# Afterwards the same script is the `overbranch` command:
+#   overbranch [up|stop|logs|status|restart|update|build|backup|restore FILE]
+# Windows (PowerShell) users: install.ps1.
 # ==============================================================================
-
 set -eo pipefail
 
-# ANSI Colors
-if [ -t 1 ]; then
-    CYAN='\033[0;36m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[1;33m'
-    RED='\033[0;31m'
-    BOLD='\033[1m'
-    RESET='\033[0m'
+RAW="${OVERBRANCH_RAW_URL:-https://raw.githubusercontent.com/abin-karukappallil/overbranch-selfhost/main}"
+REPO_URL="${OVERBRANCH_REPO_URL:-https://github.com/abin-karukappallil/overbranch-selfhost.git}"
+URL="http://localhost:${PORT:-3000}"
+
+if [ -t 1 ]; then C='\033[0;36m'; G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; Z='\033[0m'; else C=; G=; Y=; R=; Z=; fi
+info() { printf "${C}[INFO]${Z} %s\n" "$*"; }
+ok()   { printf "${G}[OK]${Z} %s\n" "$*"; }
+warn() { printf "${Y}[WARN]${Z} %s\n" "$*" >&2; }
+die()  { printf "${R}[ERROR]${Z} %s\n" "$*" >&2; exit 1; }
+
+# --- where we live -----------------------------------------------------------
+# Run from a checkout: use it. Otherwise (curl | bash, or the installed CLI): ~/.overbranch
+SELF="${BASH_SOURCE[0]:-}"
+if [ -n "$SELF" ] && [ -f "$SELF" ] && [ -f "$(dirname "$SELF")/docker-compose.yml" ]; then
+    OB_HOME="$(cd "$(dirname "$SELF")" && pwd)"
 else
-    CYAN=''
-    GREEN=''
-    YELLOW=''
-    RED=''
-    BOLD=''
-    RESET=''
+    OB_HOME="${OVERBRANCH_HOME:-$HOME/.overbranch}"
 fi
+mkdir -p "$OB_HOME"
 
-log_info() { echo -e "${CYAN}[INFO]${RESET} $1"; }
-log_ok() { echo -e "${GREEN}[OK]${RESET} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${RESET} $1"; }
-log_error() { echo -e "${RED}[ERROR]${RESET} $1" >&2; }
+case "$(uname -s)" in
+    Linux*)  OS=linux ;;
+    Darwin*) OS=macos ;;
+    MINGW*|MSYS*|CYGWIN*) OS=windows ;;
+    *) OS=other ;;
+esac
 
-print_banner() {
-    echo -e "${GREEN}${BOLD}"
-    cat << "EOF"
-  ___                  ____                       _     
- / _ \__   _____ _ __ | __ ) _ __ __ _ _ __   ___| |__  
-| | | \ \ / / _ \ '__||  _ \| '__/ _` | '_ \ / __| '_ \ 
-| |_| |\ V /  __/ |   | |_) | | | (_| | | | | (__| | | |
- \___/  \_/ \___|_|   |____/|_|  \__,_|_| |_|\___|_| |_|
-EOF
-    echo -e "${RESET}"
-    echo -e "${BOLD}100% Local Self-Hosted LaTeX IDE • Docker Compose • Zero Configuration${RESET}"
-    echo -e "Universal Docker Installer\n"
-}
+SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+fetch() { curl -fsSL --retry 3 "$1" -o "$2"; }
 
-# 1. Detect OS
-detect_os() {
-    OS_TYPE="$(uname -s)"
-    case "$OS_TYPE" in
-        Linux*)
-            if [ -f /etc/os-release ]; then
-                . /etc/os-release
-                DISTRO="${ID:-linux}"
-            else
-                DISTRO="linux"
-            fi
-            OS_NAME="Linux ($DISTRO)"
-            ;;
-        Darwin*)
-            OS_NAME="macOS"
-            DISTRO="macos"
-            ;;
-        MINGW*|MSYS*|CYGWIN*)
-            OS_NAME="Windows"
-            DISTRO="windows"
-            ;;
-        *)
-            OS_NAME="Unix-like ($OS_TYPE)"
-            DISTRO="unknown"
-            ;;
-    esac
-}
-
-print_banner
-detect_os
-log_info "Detected Operating System: ${BOLD}${OS_NAME}${RESET}"
-
-# 2. Check for Git
-if ! command -v git >/dev/null 2>&1; then
-    log_info "Git is required. Attempting installation..."
-    if [ "$DISTRO" = "macos" ]; then
-        xcode-select --install 2>/dev/null || brew install git 2>/dev/null || true
-    elif [ "$(id -u)" -eq 0 ]; then
-        if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y git; fi
-        if command -v pacman >/dev/null 2>&1; then pacman -Sy --noconfirm git; fi
-        if command -v dnf >/dev/null 2>&1; then dnf install -y git; fi
-    elif command -v sudo >/dev/null 2>&1; then
-        if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y git; fi
-        if command -v pacman >/dev/null 2>&1; then sudo pacman -Sy --noconfirm git; fi
-        if command -v dnf >/dev/null 2>&1; then sudo dnf install -y git; fi
-    fi
-fi
-
-# 3. Locate, clone, or update repository
-WORK_DIR=""
-if [ -f "./docker-compose.yml" ] && [ -f "./Dockerfile" ]; then
-    WORK_DIR="$(pwd)"
-elif [ -d "$HOME/overbranch-selfhost" ] && [ -f "$HOME/overbranch-selfhost/docker-compose.yml" ]; then
-    WORK_DIR="$HOME/overbranch-selfhost"
-    log_info "Found existing OverBranch directory at ${WORK_DIR}. Updating..."
-    (cd "$WORK_DIR" && git pull origin main 2>/dev/null || true)
-elif [ -d "./overbranch-selfhost" ] && [ -f "./overbranch-selfhost/docker-compose.yml" ]; then
-    WORK_DIR="$(pwd)/overbranch-selfhost"
-    log_info "Found existing OverBranch directory at ${WORK_DIR}. Updating..."
-    (cd "$WORK_DIR" && git pull origin main 2>/dev/null || true)
-fi
-
-if [ -z "$WORK_DIR" ]; then
-    REPO_URL="${OVERBRANCH_REPO_URL:-https://github.com/abin-karukappallil/overbranch-selfhost.git}"
-    TARGET_DIR="${OVERBRANCH_INSTALL_DIR:-$HOME/overbranch-selfhost}"
-    if [ -d "$TARGET_DIR" ]; then
-        log_info "Directory ${TARGET_DIR} already exists. Updating to latest commit..."
-        (cd "$TARGET_DIR" && git pull origin main 2>/dev/null || true)
-    else
-        log_info "Cloning OverBranch repository from ${CYAN}${REPO_URL}${RESET} into ${TARGET_DIR}..."
-        git clone --depth 1 "$REPO_URL" "$TARGET_DIR"
-    fi
-    WORK_DIR="$TARGET_DIR"
-fi
-
-cd "$WORK_DIR"
-log_ok "Working directory: ${WORK_DIR}"
-
-# 4. Check & Install Docker Engine if missing
-if ! command -v docker >/dev/null 2>&1; then
-    log_info "Docker is not detected on your system. Installing Docker automatically..."
-    case "$DISTRO" in
+# --- docker -------------------------------------------------------------------
+install_docker() {
+    info "Docker not found; installing..."
+    case "$OS" in
         macos)
             if command -v brew >/dev/null 2>&1; then
                 brew install --cask docker
             else
-                ARCH="$(uname -m)"
-                [ "$ARCH" = "x86_64" ] && D_ARCH="amd64" || D_ARCH="arm64"
-                log_info "Downloading Docker Desktop DMG for macOS ($D_ARCH)..."
-                curl -fsSL "https://desktop.docker.com/mac/main/${D_ARCH}/Docker.dmg" -o /tmp/Docker.dmg
+                local a; [ "$(uname -m)" = "x86_64" ] && a=amd64 || a=arm64
+                fetch "https://desktop.docker.com/mac/main/${a}/Docker.dmg" /tmp/Docker.dmg
                 hdiutil attach /tmp/Docker.dmg -nobrowse -quiet
                 cp -R /Volumes/Docker/Docker.app /Applications/
                 hdiutil detach /Volumes/Docker -quiet || true
@@ -147,90 +59,161 @@ if ! command -v docker >/dev/null 2>&1; then
             fi
             open -a Docker
             ;;
-        *)
-            if [ "$(id -u)" -eq 0 ]; then
-                curl -fsSL https://get.docker.com | sh
-                systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true
-            elif command -v sudo >/dev/null 2>&1; then
-                log_info "Running official Docker installer (sudo password may be required)..."
-                curl -fsSL https://get.docker.com | sudo sh
-                sudo systemctl enable --now docker 2>/dev/null || sudo service docker start 2>/dev/null || true
-                sudo usermod -aG docker "$USER" 2>/dev/null || true
-            else
-                log_error "Sudo or root privileges are required to install Docker on Linux."
-                exit 1
-            fi
+        linux)
+            [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ] || die "Need root or sudo to install Docker. Install it from https://docs.docker.com/engine/install/ and re-run."
+            curl -fsSL https://get.docker.com | $SUDO sh
+            $SUDO systemctl enable --now docker 2>/dev/null || $SUDO service docker start 2>/dev/null || true
+            [ -n "$SUDO" ] && $SUDO usermod -aG docker "$USER" 2>/dev/null || true
             ;;
+        windows) die "Docker Desktop is not installed. Run install.ps1 from PowerShell (it installs Docker Desktop), then re-run." ;;
+        *) die "Unsupported platform. Install Docker: https://docs.docker.com/engine/install/" ;;
     esac
-fi
+}
 
-# 5. Determine if sudo is required for Docker socket (Linux non-root users)
-SUDO_PREFIX=""
-if [ "$(id -u)" -ne 0 ] && command -v docker >/dev/null 2>&1; then
-    DOCKER_ERR=$(docker info 2>&1 || true)
-    if echo "$DOCKER_ERR" | grep -qi "permission denied"; then
-        if command -v sudo >/dev/null 2>&1; then
-            echo "[INFO] User '$USER' requires permissions for /var/run/docker.sock."
-            echo "[INFO] Using 'sudo' for Docker commands..."
-            SUDO_PREFIX="sudo "
-            if ! groups "$USER" 2>/dev/null | grep -q "\bdocker\b"; then
-                echo "[INFO] Adding '$USER' to the 'docker' group..."
-                sudo usermod -aG docker "$USER" 2>/dev/null || true
-                echo "[TIP] To run Docker without sudo in future terminals, run: newgrp docker"
-            fi
+DOCKER="docker"
+ensure_docker() {
+    command -v docker >/dev/null 2>&1 || install_docker
+    command -v docker >/dev/null 2>&1 || die "Docker is still not on PATH. Open a new terminal (or start Docker Desktop) and re-run."
+
+    if ! docker info >/dev/null 2>&1; then
+        if docker info 2>&1 | grep -qi "permission denied" && [ -n "$SUDO" ]; then
+            warn "No permission for the Docker socket; using sudo for this run (log out/in to use the docker group)."
+            DOCKER="sudo docker"
+        else
+            info "Starting the Docker daemon..."
+            case "$OS" in
+                macos|windows) open -a Docker 2>/dev/null || true ;;
+                *) $SUDO systemctl start docker 2>/dev/null || $SUDO service docker start 2>/dev/null || true ;;
+            esac
+            local i
+            for i in $(seq 1 45); do
+                docker info >/dev/null 2>&1 && break
+                if docker info 2>&1 | grep -qi "permission denied" && [ -n "$SUDO" ]; then DOCKER="sudo docker"; break; fi
+                sleep 2
+            done
         fi
     fi
-fi
+    $DOCKER info >/dev/null 2>&1 || die "Cannot reach the Docker daemon. Start Docker (Docker Desktop on macOS/Windows) and re-run 'overbranch'."
+    $DOCKER compose version >/dev/null 2>&1 || die "Docker Compose v2 plugin is missing. See https://docs.docker.com/compose/install/"
+}
 
-# 6. Ensure Docker daemon is active
-if ! ${SUDO_PREFIX}docker info >/dev/null 2>&1; then
-    log_info "Docker daemon is not active. Starting Docker daemon..."
-    if [ "$DISTRO" = "macos" ]; then
-        open -a Docker 2>/dev/null || true
-    else
-        if [ "$(id -u)" -eq 0 ]; then
-            systemctl start docker 2>/dev/null || service docker start 2>/dev/null || true
-        elif command -v sudo >/dev/null 2>&1; then
-            echo "[INFO] Starting Docker service (sudo password may be required)..."
-            sudo systemctl start docker || sudo service docker start || true
-        fi
+# --- compose ------------------------------------------------------------------
+BUILD=0
+compose() {
+    local dir="$OB_HOME" f=(-f docker-compose.yml)
+    if [ "$BUILD" = 1 ]; then
+        dir="$(source_dir)"; f+=(-f docker-compose.build.yml)
     fi
+    (cd "$dir" && $DOCKER compose "${f[@]}" "$@")
+}
 
-    for i in $(seq 1 20); do
+# `build` needs the Dockerfile, so it needs a checkout.
+source_dir() {
+    if [ -f "$OB_HOME/Dockerfile" ]; then echo "$OB_HOME"; return; fi
+    local d="$OB_HOME/src"
+    if [ -d "$d/.git" ]; then git -C "$d" pull --ff-only -q || true
+    else command -v git >/dev/null 2>&1 || die "git is required for 'overbranch build'."
+         git clone --depth 1 "$REPO_URL" "$d" >&2; fi
+    echo "$d"
+}
+
+sync_files() {
+    # In a checkout the files are already there.
+    [ -f "$OB_HOME/Dockerfile" ] && return 0
+    fetch "$RAW/docker-compose.yml" "$OB_HOME/docker-compose.yml"
+    fetch "$RAW/install.sh" "$OB_HOME/install.sh" && chmod +x "$OB_HOME/install.sh"
+}
+
+pull_image() {
+    local log; log="$(mktemp)"
+    info "Pulling the OverBranch image (first time: a few GB; later updates are small)..."
+    if ! compose pull 2>&1 | tee "$log"; then
+        if grep -qiE "unauthorized|denied|forbidden|401|403" "$log"; then
+            die "The image is not publicly readable yet (registry said unauthorized). The maintainer must make the GHCR package public. Meanwhile: overbranch build"
+        elif grep -qiE "no such host|dial tcp|timeout|network is unreachable|connection refused|TLS handshake" "$log"; then
+            die "Could not reach ghcr.io - you appear to be offline. If the image is already pulled, run 'overbranch up'; otherwise connect and retry."
+        fi
+        die "Image pull failed (see above)."
+    fi
+    rm -f "$log"
+}
+
+# Older installs kept ./overbranch.db next to the compose file; carry it over once.
+migrate_legacy_db() {
+    local old="$OB_HOME/overbranch.db"
+    [ -s "$old" ] || return 0
+    $DOCKER volume inspect overbranch-data >/dev/null 2>&1 && \
+        $DOCKER run --rm -v overbranch-data:/d --entrypoint sh "$IMAGE" -c 'test -e /d/overbranch.db' 2>/dev/null && return 0
+    info "Migrating your existing database into the new data volume..."
+    $DOCKER volume create overbranch-data >/dev/null
+    $DOCKER run --rm -v overbranch-data:/d -v "$OB_HOME:/src:ro" --entrypoint sh "$IMAGE" -c 'cp -p /src/overbranch.db* /d/' \
+        && mv "$old" "$old.migrated" && ok "Migrated (old file kept as overbranch.db.migrated)."
+}
+
+image_ref() { compose config --images 2>/dev/null | head -1; }
+
+cmd_up() {
+    pull_image
+    IMAGE="$(image_ref)"; migrate_legacy_db || true
+    compose up -d
+    info "Waiting for OverBranch to become healthy (first start warms the TeX font cache)..."
+    local i
+    for i in $(seq 1 90); do
+        curl -sf "http://localhost:${BACKEND_PORT:-8000}/api/health" >/dev/null 2>&1 && break
         sleep 2
-        if ${SUDO_PREFIX}docker info >/dev/null 2>&1; then
-            log_ok "Docker daemon is active and responsive."
-            break
-        fi
     done
-fi
+    ok "OverBranch is running at ${URL}"
+    case "$OS" in macos) open "$URL" >/dev/null 2>&1 || true ;; linux) xdg-open "$URL" >/dev/null 2>&1 || true ;; esac
+}
 
-# 7. Prepare local files (prevent directory-mount bug)
-if [ -d "$WORK_DIR/overbranch.db" ]; then
-    rm -rf "$WORK_DIR/overbranch.db"
-fi
-if [ ! -f "$WORK_DIR/overbranch.db" ]; then
-    touch "$WORK_DIR/overbranch.db"
-fi
-mkdir -p "$WORK_DIR/uploads"
+cmd_build() { BUILD=1; compose up -d --build; ok "Built and started: ${URL}"; }
 
-# 8. Create global 'overbranch' CLI launcher in ~/.local/bin or /usr/local/bin
-TARGET_BIN_DIR=""
-if [ -d "$HOME/.local/bin" ] || mkdir -p "$HOME/.local/bin" 2>/dev/null; then
-    TARGET_BIN_DIR="$HOME/.local/bin"
-elif [ -w "/usr/local/bin" ]; then
-    TARGET_BIN_DIR="/usr/local/bin"
-fi
+cmd_backup() {
+    local out="${1:-overbranch-backup-$(date +%Y%m%d-%H%M%S).tgz}"
+    IMAGE="$(image_ref)"; out="$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"
+    $DOCKER run --rm -v overbranch-data:/data:ro -v overbranch-uploads:/uploads:ro -v "$(dirname "$out"):/out" \
+        --entrypoint tar "$IMAGE" czf "/out/$(basename "$out")" -C / data uploads
+    ok "Backup written to $out"
+}
 
-if [ -n "$TARGET_BIN_DIR" ]; then
-    cat << EOF > "${TARGET_BIN_DIR}/overbranch"
-#!/usr/bin/env bash
-cd "${WORK_DIR}" && exec ./docker-up.sh "\$@"
-EOF
-    chmod +x "${TARGET_BIN_DIR}/overbranch"
-    log_ok "Installed global CLI command: ${BOLD}overbranch${RESET} (in ${TARGET_BIN_DIR})"
-fi
+cmd_restore() {
+    [ -f "${1:-}" ] || die "Usage: overbranch restore <backup.tgz>"
+    local f dir; f="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; dir="$(dirname "$f")"
+    IMAGE="$(image_ref)"
+    warn "This replaces the current database and projects."
+    compose stop 2>/dev/null || true
+    $DOCKER run --rm -v overbranch-data:/data -v overbranch-uploads:/uploads -v "$dir:/in:ro" \
+        --entrypoint sh "$IMAGE" -c "rm -rf /data/* /uploads/* && tar xzf /in/$(basename "$f") -C /"
+    compose up -d && ok "Restored from $f"
+}
 
-# 9. Start OverBranch via docker-up.sh
-chmod +x ./docker-up.sh
-exec ./docker-up.sh "$@"
+install_cli() {
+    local bin="$HOME/.local/bin"; mkdir -p "$bin"
+    printf '#!/usr/bin/env bash\nexec bash "%s/install.sh" "$@"\n' "$OB_HOME" > "$bin/overbranch"
+    chmod +x "$bin/overbranch"
+    case ":$PATH:" in *":$bin:"*) ;; *)
+        local rc; for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+            [ -f "$rc" ] && ! grep -q '.local/bin' "$rc" && printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$rc" || true
+        done
+        warn "Added ~/.local/bin to your shell profile; open a new terminal to use 'overbranch'." ;;
+    esac
+    ok "Installed the 'overbranch' command"
+}
+
+# --- main ---------------------------------------------------------------------
+ACTION="${1:-up}"; [ $# -gt 0 ] && shift || true
+ensure_docker
+sync_files
+case "$ACTION" in
+    up|start)        cmd_up ;;
+    update|pull)     pull_image; compose up -d ;;
+    build)           cmd_build ;;
+    stop|down)       compose down ;;
+    restart)         compose restart ;;
+    logs)            compose logs -f "$@" ;;
+    ps|status)       compose ps ;;
+    backup)          cmd_backup "$@" ;;
+    restore)         cmd_restore "$@" ;;
+    *) die "Unknown command '$ACTION'. Use: up | stop | logs | status | restart | update | build | backup | restore" ;;
+esac
+[ "$ACTION" = up ] || [ "$ACTION" = start ] && install_cli || true

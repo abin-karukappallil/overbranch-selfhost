@@ -1,11 +1,15 @@
+# Pull-only. `docker compose up -d` fetches a prebuilt, multi-arch (amd64/arm64)
+# image from GHCR. There is deliberately NO `build:` key here: with both
+# `image:` and `build:` set, Compose silently falls back to a 20-40 minute
+# local build whenever the pull fails. To build instead, see
+# docker-compose.build.yml (app layer, minutes) or docker-compose.texlive.yml
+# (everything, slow).
+name: overbranch
+
 services:
   overbranch:
-    image: ${DOCKER_IMAGE:-overbranch-selfhost:latest}
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        TEX_BASE: ${TEX_BASE:-texlive-base}
+    image: ghcr.io/abin-karukappallil/overbranch-selfhost:${OVERBRANCH_TAG:-latest}
+    pull_policy: missing
     container_name: overbranch-selfhost
     restart: unless-stopped
     ports:
@@ -15,7 +19,7 @@ services:
     environment:
       - PORT=3000
       - HOSTNAME=0.0.0.0
-      - DATABASE_URL=${DATABASE_URL:-file:/app/overbranch.db}
+      - OVERBRANCH_DATA_DIR=/app/data
       - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
       - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8000}
       - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
@@ -27,12 +31,20 @@ services:
       - BETTER_AUTH_URL=${BETTER_AUTH_URL:-http://localhost:3000}
       - NEXT_PUBLIC_ZERO_AUTH=${NEXT_PUBLIC_ZERO_AUTH:-true}
     volumes:
-      - ./uploads:/app/uploads
-      - ./overbranch.db:/app/overbranch.db
-      - ./backend/templates:/app/backend/templates:ro
+      # Named volumes behave identically on Linux, macOS and Windows and keep
+      # SQLite's -wal/-shm files next to the database.
+      - overbranch-data:/app/data
+      - overbranch-uploads:/app/uploads
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/health"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/health && curl -sf -o /dev/null http://localhost:3000"]
       interval: 30s
       timeout: 10s
-      start_period: 30s
+      start_period: 60s
       retries: 3
+
+# Fixed names so backup/restore and upgrades find them from any directory.
+volumes:
+  overbranch-data:
+    name: overbranch-data
+  overbranch-uploads:
+    name: overbranch-uploads

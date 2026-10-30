@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any
 
 logger = logging.getLogger("synctex_service")
 
-SYNCTEX_CACHE_DIR = Path(tempfile.gettempdir()) / "overbranch_synctex_cache"
+SYNCTEX_CACHE_DIR = Path(os.environ.get("OVERBRANCH_DATA_DIR") or tempfile.gettempdir()) / "overbranch_synctex_cache"
 SYNCTEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # In-memory LRU cache for forward and backward lookup results

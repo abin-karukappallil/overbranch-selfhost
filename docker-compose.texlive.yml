@@ -1,0 +1,12 @@
+# Last resort: build EVERYTHING locally, including TeX Live from CTAN.
+# 30-60 minutes, ~20 GB free disk, needs internet (CTAN, apt, SourceForge).
+#   docker build -f docker/texlive.Dockerfile -t overbranch-texlive:local .
+#   docker compose -f docker-compose.yml -f docker-compose.texlive.yml up -d --build
+services:
+  overbranch:
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TEX_BASE: overbranch-texlive:local

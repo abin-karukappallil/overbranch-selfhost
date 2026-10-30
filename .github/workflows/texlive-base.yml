@@ -1,0 +1,188 @@
+name: texlive-base
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker/texlive.Dockerfile'
+      - 'docker/check-fonts.sh'
+      - 'docker/smoke-tests/**'
+      - '.github/workflows/texlive-base.yml'
+  workflow_dispatch:
+    inputs:
+      texlive_year:
+        description: 'TeX Live release to install'
+        default: '2026'
+      tlnet_url:
+        description: 'tlnet repository (blank = current mirror.ctan.org)'
+        default: ''
+      dry_run:
+        description: 'Verify only; do not push'
+        type: boolean
+        default: false
+
+# A multi-hour build must never be cancelled by a follow-up push.
+concurrency:
+  group: texlive-base
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  BASE_IMAGE: ghcr.io/${{ github.repository_owner }}/overbranch-texlive
+  TEXLIVE_YEAR: ${{ github.event.inputs.texlive_year || '2026' }}
+  TLNET_URL: ${{ github.event.inputs.tlnet_url || 'https://mirror.ctan.org/systems/texlive/tlnet' }}
+  PUSH: ${{ github.event.inputs.dry_run != 'true' }}
+
+jobs:
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 350   # hard job limit is 6 h; fail cleanly before it
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners: emulating a scheme-full install + format dumps
+          # under QEMU would not fit in the 6 h limit.
+          - { arch: amd64, platform: linux/amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - name: Disk before
+        run: df -h / /mnt || true
+
+      - name: Reclaim runner disk
+        run: |
+          # Inline, not a marketplace action: the arm64 image has a different
+          # preinstalled set, so every path may legitimately be absent.
+          for p in /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                   /usr/local/.ghcup /usr/local/share/powershell \
+                   /usr/local/share/chromium /usr/share/swift \
+                   "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"; do
+            sudo rm -rf "$p" || true
+          done
+          sudo docker image prune -af || true
+          df -h /
+
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 1. VERIFY: font gate + smoke compiles, discarded. Runs first so
+      #    nothing is published that failed a compile.
+      - name: Verify (font gate + smoke compiles)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/texlive.Dockerfile
+          target: verify
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            TEXLIVE_YEAR=${{ env.TEXLIVE_YEAR }}
+            TLNET_URL=${{ env.TLNET_URL }}
+            OB_FONT_GATE_STRICT=1
+          outputs: type=cacheonly
+          # Registry cache, not type=gha: the Actions cache is capped at 10 GB.
+          cache-from: type=registry,ref=${{ env.BASE_IMAGE }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.BASE_IMAGE }}:buildcache-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
+          provenance: false
+          sbom: false
+
+      # 2. SHIP: same cached layers, minus the verify stage.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/texlive.Dockerfile
+          target: texlive
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            TEXLIVE_YEAR=${{ env.TEXLIVE_YEAR }}
+            TLNET_URL=${{ env.TLNET_URL }}
+            OB_FONT_GATE_STRICT=1
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=OverBranch TeX Live ${{ env.TEXLIVE_YEAR }} scheme-full base
+            org.opencontainers.image.licenses=MIT
+          outputs: type=image,name=${{ env.BASE_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ env.PUSH }}
+          cache-from: type=registry,ref=${{ env.BASE_IMAGE }}:buildcache-${{ matrix.arch }}
+          # Explicit: otherwise buildx adds an unknown/unknown attestation
+          # entry that the manifest merge folds into the published index.
+          provenance: false
+          sbom: false
+
+      - name: Export digest
+        if: env.PUSH == 'true'
+        run: |
+          mkdir -p /tmp/digests
+          printf '%s' '${{ steps.build.outputs.digest }}' > "/tmp/digests/${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v7
+        if: env.PUSH == 'true'
+        with:
+          name: texlive-digest-${{ matrix.arch }}
+          path: /tmp/digests/${{ matrix.arch }}
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Disk after
+        if: always()
+        run: df -h / /mnt || true
+
+  merge:
+    name: merge manifest
+    needs: [build]   # both arches must succeed; never publish half a manifest
+    if: github.event.inputs.dry_run != 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: texlive-digest-*
+          path: /tmp/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and assert multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          TAG="${TEXLIVE_YEAR}.${{ github.run_number }}"
+          docker buildx imagetools create \
+            -t "${BASE_IMAGE}:${TAG}" -t "${BASE_IMAGE}:${TEXLIVE_YEAR}" -t "${BASE_IMAGE}:latest" \
+            $(for f in *; do printf '%s@%s ' "$BASE_IMAGE" "$(cat "$f")"; done)
+
+          REF="${BASE_IMAGE}:${TAG}"
+          docker buildx imagetools inspect "$REF"
+          PLATFORMS="$(docker buildx imagetools inspect "$REF" \
+            --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{"\n"}}{{end}}' \
+            | sort | paste -sd, -)"
+          test "$PLATFORMS" = "linux/amd64,linux/arm64"   # also rejects unknown/unknown
+          DIGEST="$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r .digest)"
+
+          {
+            echo '## TeX base published'
+            echo
+            echo 'Commit as `docker/texlive-base.lock` to make the app image build from it:'
+            echo '```sh'
+            echo "TEX_BASE_IMAGE=${BASE_IMAGE}"
+            echo "TEX_BASE_TAG=${TAG}"
+            echo "TEX_BASE_DIGEST=${DIGEST}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

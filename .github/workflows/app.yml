@@ -1,0 +1,172 @@
+name: app
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  APP_IMAGE: ghcr.io/${{ github.repository_owner }}/overbranch-selfhost
+
+jobs:
+  base:
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.lock.outputs.ref }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - id: lock
+        run: |
+          set -euo pipefail
+          . ./docker/texlive-base.lock
+          : "${TEX_BASE_IMAGE:?}" "${TEX_BASE_TAG:?}"
+          # Read from git so a checkout at commit X reproduces CI's base at X.
+          # name:tag@digest once the base has been published and pinned.
+          REF="${TEX_BASE_IMAGE}:${TEX_BASE_TAG}"
+          [ -n "${TEX_BASE_DIGEST:-}" ] && REF="${REF}@${TEX_BASE_DIGEST}"
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          # docker-compose.build.yml carries the same default; keep them in step.
+          grep -q "${TEX_BASE_IMAGE}:" docker-compose.build.yml
+
+  build:
+    name: build ${{ matrix.arch }}
+    needs: [base]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, platform: linux/amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - name: Reclaim runner disk
+        run: |
+          for p in /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                   /usr/local/.ghcup "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"; do
+            sudo rm -rf "$p" || true
+          done
+          df -h /
+
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assert base is reachable and recent enough
+        run: |
+          set -euo pipefail
+          REF='${{ needs.base.outputs.ref }}'
+          YEAR="$(docker buildx imagetools inspect "$REF" \
+            --format '{{ index .Image.Config.Labels "org.overbranch.texlive" }}')"
+          echo "base TeX Live: $YEAR"
+          # >= 2025 is a hard requirement: only then is latexminted allow-listed
+          # in restricted shell-escape, which is how the app runs minted.
+          test "$YEAR" -ge 2025
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            TEX_BASE=${{ needs.base.outputs.ref }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=OverBranch self-hosted LaTeX IDE
+            org.opencontainers.image.licenses=MIT
+            org.overbranch.texlive.base=${{ needs.base.outputs.ref }}
+          outputs: type=image,name=${{ env.APP_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=app-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=app-${{ matrix.arch }}
+          provenance: false
+          sbom: false
+
+      # Real artifact, real hardware, real entrypoint, runtime compile flags.
+      - name: Runtime smoke
+        run: |
+          set -euo pipefail
+          docker buildx prune -af
+          REF='${{ env.APP_IMAGE }}@${{ steps.build.outputs.digest }}'
+          docker run -d --name ob -p 3000:3000 -p 8000:8000 "$REF"
+          for i in $(seq 1 90); do
+            curl -sf http://localhost:8000/api/health >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:8000/api/health
+          curl -sfo /dev/null http://localhost:3000
+          docker exec ob sh -c 'pgrep -f uvicorn && pgrep -f gemini-web2api'
+          docker exec ob sh -c 'echo "$OVERBRANCH_DATA_DIR" | grep -q "^/app/data$" && test -f /app/data/overbranch.db'
+          # minted WITHOUT -shell-escape, exactly as backend/compiler.py runs it
+          docker exec ob sh -c 'cd /usr/local/share/overbranch/smoke-tests && latexmk -pdf -interaction=nonstopmode mint.tex && test -f mint.pdf'
+          docker rm -f ob
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          printf '%s' '${{ steps.build.outputs.digest }}' > "/tmp/digests/${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: app-digest-${{ matrix.arch }}
+          path: /tmp/digests/${{ matrix.arch }}
+          retention-days: 1
+          if-no-files-found: error
+
+  merge:
+    needs: [build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: app-digest-*
+          path: /tmp/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.APP_IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=sha,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: Create and assert multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(for f in *; do printf '%s@%s ' "$APP_IMAGE" "$(cat "$f")"; done)
+          REF="${APP_IMAGE}:${{ steps.meta.outputs.version }}"
+          P="$(docker buildx imagetools inspect "$REF" \
+            --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{"\n"}}{{end}}' \
+            | sort | paste -sd, -)"
+          test "$P" = "linux/amd64,linux/arm64"
