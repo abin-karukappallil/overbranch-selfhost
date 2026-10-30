@@ -173,8 +173,24 @@ RUN sed -i 's/ main$/ main contrib/' /etc/apt/sources.list.d/debian.sources 2>/d
 RUN set -eux; \
     mkdir -p /tmp/install-tl; \
     cd /tmp/install-tl; \
-    curl -fsSL "${TLNET_URL}/install-tl-unx.tar.gz" \
-        -o install-tl-unx.tar.gz; \
+    # mirror.ctan.org is a redirector: each request can land on a different
+    # mirror, and some have broken TLS (curl exit 60). Try a few known-good
+    # mirrors, then pin install-tl to the one that answered so every package
+    # download comes from the same host.
+    TL_REPO=""; \
+    for base in "${TLNET_URL}" \
+        https://mirrors.ctan.org/systems/texlive/tlnet \
+        https://ctan.math.illinois.edu/systems/texlive/tlnet \
+        https://ftp.fau.de/ctan/systems/texlive/tlnet \
+        https://mirror.las.iastate.edu/tex-archive/systems/texlive/tlnet; do \
+        if eff="$(curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
+                 -w '%{url_effective}' -o install-tl-unx.tar.gz "$base/install-tl-unx.tar.gz")"; then \
+            TL_REPO="${eff%/install-tl-unx.tar.gz}"; break; \
+        fi; \
+        echo "TeX Live mirror failed: $base" >&2; \
+    done; \
+    test -n "$TL_REPO"; \
+    echo "Using TeX Live repository: $TL_REPO"; \
     tar -xzf install-tl-unx.tar.gz --strip-components=1; \
     # The installer is only ever the current release, so refuse to continue if
     # that is not the release this image is pinned to.
@@ -201,7 +217,7 @@ RUN set -eux; \
         "tlpdbopt_install_srcfiles 0" \
         "tlpdbopt_post_code 1" \
         > texlive.profile; \
-    ./install-tl --profile=texlive.profile; \
+    ./install-tl --profile=texlive.profile -repository "$TL_REPO"; \
     cd /; \
     rm -rf /tmp/install-tl; \
     # bin/ holds exactly one platform directory (x86_64-linux, aarch64-linux,
